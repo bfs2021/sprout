@@ -1,11 +1,7 @@
 # JDW
 
-CLI local para criação e gerenciamento automatizado de Git worktrees a partir de convenções de branch (Conventional Commits).
+Jira Driven Worktree: a local CLI that reads Jira issues and creates Git worktrees for implementation work.
 
-## Uso
+The current prototype is in `bin/jdw`. See [HANDOFF.md](HANDOFF.md) for project context, current behavior, configuration, and planned product direction.
 
-```bash
-jdw feat --feature ft_456 --slug loading-progress
-jdw fix --feature fix-login-button --slug fix-login
-jdw docs --feature guide-refresh
-```
+No Jira credentials or local project configuration belong in this repository. Per-user Jira credentials are stored in `$HOME/.jdw/auth.toml`; project configuration is kept under the Git common directory of the configured project.
