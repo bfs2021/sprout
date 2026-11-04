@@ -1,6 +1,6 @@
-# Evolution Phases of JDW
+# Evolution Phases of Sprout
 
-This document records the developmental milestones and capabilities introduced across the phases of JDW.
+This document records the developmental milestones and capabilities introduced across the phases of Sprout (initially prototyped as JDW).
 
 ---
 
@@ -26,21 +26,28 @@ This document records the developmental milestones and capabilities introduced a
   - Support for Atlassian Scoped API tokens routed through the API Gateway (`https://api.atlassian.com/ex/jira/<cloudId>`).
   - Temporary Netrc file lifecycle (created and purged safely in memory/tempfile).
   - Secure credential storage:
-    - User secrets: `$HOME/.jdw/auth.toml` (chmod 600, dir chmod 700).
-    - Project metadata: `<git-common-dir>/jdw/config.toml` (shared across worktrees, untracked by source control).
-  - Interactive onboarding wizard via `jdw init`.
+    - User secrets: `$HOME/.sprout/auth.toml` (chmod 600, dir chmod 700).
+    - Project metadata: `<git-common-dir>/sprout/config.toml` (shared across worktrees, untracked by source control).
+  - Interactive onboarding wizard via `sprout init`.
   - Automatic generation of branch slugs based on issue summaries: `--issue <KEY>`.
 
 ---
 
 ## Phase 3: Herdr Workspace, Multi-Agent Dispatch & Methodology Decoupling
-**Commit:** *Phase 3 Commit*
+**Commit:** `276f663 feat(herdr): integracao com herdr, despacho multi-agente e desacoplamento de metodologias`
 
 - **Goal:** Complete end-to-end automation from issue key to active coding agent session in a dedicated terminal workspace.
 - **Key Capabilities:**
   - **Full Issue Extraction:** Fetches `summary`, `description`, `issuetype`, `status`, `priority`, and `assignee`.
-  - **Normalized Issue Contract:** Writes `.jdw/issue.json` (machine-readable) and `.jdw/issue.md` (markdown) inside each worktree.
+  - **Normalized Issue Contract:** Writes `.sprout/issue.json` (machine-readable) and `.sprout/issue.md` (markdown) inside each worktree.
   - **Herdr Workspace Management:** Automatically creates and focuses a dedicated terminal workspace in Herdr (`herdr workspace create --cwd "$target" --label "$label"`).
   - **Multi-Agent Runtime Selection:** Supports choosing which agent to run per session (`-a claude`, `-a agy`, `-a codex`, `-a gemini`).
   - **Methodology Decoupling:** Pluggable prompt templates for BMad (`-m bmad`), SCPE (`-m scpe`), or interactive (`-m none`).
   - **Interactive Terminal Readiness:** Prompts are injected non-blockingly, allowing the developer to continue conversing immediately.
+
+---
+
+## Phase 4: Open-Source Rebranding as Sprout
+- Rebranded from JDW to **Sprout** to reflect a tracker-agnostic, developer-flow-first identity.
+- Added backwards compatibility aliases and directory fallbacks.
+- Documentation and CLI polished for open-source publication.

@@ -1,20 +1,22 @@
-# JDW — Jira Driven Worktree
+# 🌱 Sprout
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Git Worktree](https://img.shields.io/badge/Git-Worktree-orange.svg)](https://git-scm.com/docs/git-worktree)
 [![Multiplexer: Herdr](https://img.shields.io/badge/Multiplexer-Herdr-6c5ce7.svg)](https://herdr.dev)
-[![Agents: Multi--Agent](https://img.shields.io/badge/Agents-Claude%20%7C%20AGY%20%7C%20Codex-success.svg)](#supported-agents)
+[![Agents: Multi--Agent](https://img.shields.io/badge/Agents-Claude%20%7C%20AGY%20%7C%20Codex-success.svg)](#multi-agent-compatibility)
 
-> **One command from Jira issue to active coding agent in a focused terminal workspace.**
+> **One command from issue ticket to active coding agent in a focused Git worktree.**
 
-JDW is an open-source developer workflow automation tool designed to eliminate the friction between task management, Git branches, terminal workspaces, and AI coding agents.
+**Sprout** is an open-source developer workflow automation tool designed to eliminate the friction between task management, Git branches, terminal workspaces, and AI coding agents.
+
+Like a fresh branch springing cleanly from the trunk, Sprout turns any issue into an isolated, ready-to-code workspace with an AI agent already paired and briefed.
 
 ---
 
 ## The Problem: Friction Kills Developer Flow
 
 Starting a new implementation task usually involves a dozen repetitive, context-draining steps:
-1. Opening the browser, searching for the Jira ticket, and reading the requirements.
+1. Opening the browser, searching for the ticket, and reading the requirements.
 2. Deriving a sensible branch name according to project conventions.
 3. Deciding whether to stash ongoing work or clone a new repository.
 4. Manually setting up a Git worktree linked to `origin/main`.
@@ -28,16 +30,16 @@ This friction fragments focus, delays coding, and leads to messy branches and co
 
 ## The Solution: One Command to Flow
 
-With **JDW**, a single terminal command handles the entire pipeline:
+With **Sprout**, a single terminal command handles the entire pipeline:
 
 ```bash
-jdw fix --issue FT-123
+sprout fix --issue FT-123
 ```
 
-In seconds, JDW:
-1. 📡 **Queries Jira Cloud** securely via Atlassian Scoped API Gateway to fetch the issue summary, description, type, priority, and metadata.
+In seconds, Sprout:
+1. 📡 **Queries your issue tracker** (Jira Cloud out-of-the-box via Atlassian Scoped API Gateway) to fetch summary, description, type, priority, and metadata.
 2. 🌿 **Creates an isolated Git worktree** with a kebab-cased branch following Conventional Commits (`fix/fix-login-error`), tracking `origin/main`.
-3. 📄 **Generates a normalized contract** (`.jdw/issue.json` and `.jdw/issue.md`) directly in the new worktree so agents have instant, structured access to requirements without web scraping or leaking credentials.
+3. 📄 **Generates a normalized contract** (`.sprout/issue.json` and `.sprout/issue.md`) directly in the new worktree so agents have instant, structured access to requirements without web scraping or leaking credentials.
 4. 🖥️ **Spins up a focused workspace in [Herdr](https://herdr.dev)**, attaching a dedicated terminal pane to the new worktree.
 5. 🤖 **Launches your chosen AI coding agent** (e.g. Claude Code, Antigravity, or Codex) inside the Herdr pane.
 6. 🎯 **Injects an initial methodology prompt** (e.g. [BMad](https://github.com/bmad-code-org/BMAD-METHOD) or SCPE) to immediately trigger requirement analysis and draft an initial implementation brief.
@@ -50,9 +52,9 @@ You are left in an active, focused terminal with the agent already analyzing the
 
 ```mermaid
 flowchart LR
-    A["jdw fix --issue FT-123"] --> B["1. Fetch Issue Data\n(Jira Cloud REST API)"]
+    A["sprout fix --issue FT-123"] --> B["1. Fetch Issue Data\n(Jira / Trackers)"]
     B --> C["2. Create Git Worktree\n(origin/main tracking)"]
-    C --> D["3. Generate Normalized Contract\n(.jdw/issue.json & issue.md)"]
+    C --> D["3. Generate Normalized Contract\n(.sprout/issue.json & issue.md)"]
     D --> E["4. Open Workspace in Herdr\n(herdr workspace create)"]
     E --> F["5. Dispatch Agent & Prompt\n(Claude / AGY / Codex + BMad / SCPE)"]
     F --> G["6. Developer in Flow\n(Active interactive terminal)"]
@@ -66,7 +68,7 @@ flowchart LR
 * **Python 3.11+** (for TOML parsing and JSON normalization; uses standard library only)
 * **curl** & **jq**
 * **[Herdr](https://herdr.dev)** *(Required for workspace & agent orchestration)*:
-  JDW leverages Herdr's persistent daemon and socket API to programmatically create isolated workspaces, manage terminal panes, and orchestrate interactive coding agent lifecycles. Ensure Herdr is installed and running (`herdr status`).
+  Sprout leverages Herdr's persistent daemon and socket API to programmatically create isolated workspaces, manage terminal panes, and orchestrate interactive coding agent lifecycles. Ensure Herdr is installed and running (`herdr status`).
 
 ---
 
@@ -76,23 +78,23 @@ flowchart LR
 Clone this repository and add `bin/` to your `PATH`, or copy the executable:
 
 ```bash
-git clone https://github.com/your-org/jdw.git
-cd jdw
-cp bin/jdw ~/.local/bin/jdw
+git clone https://github.com/your-org/sprout.git
+cd sprout
+cp bin/sprout ~/.local/bin/sprout
 ```
 
 ### 2. Initialization
-Run `jdw init` from within your canonical base Git repository:
+Run `sprout init` from within your canonical base Git repository:
 
 ```bash
 cd ~/workspace/my-project
-jdw init
+sprout init
 ```
 
 The interactive wizard configures:
-* **Project metadata:** Project name and GitHub repository (saved under shared Git metadata at `<git-common-dir>/jdw/config.toml`).
+* **Project metadata:** Project name and GitHub repository (saved under shared Git metadata at `<git-common-dir>/sprout/config.toml`).
 * **Defaults:** Default agent (`claude`, `agy`, `codex`) and workflow method (`bmad`, `scpe`, `none`).
-* **Jira credentials:** Base URL, account email, and scoped API token (saved securely in `~/.jdw/auth.toml` with `chmod 600`).
+* **Tracker credentials:** Base URL, account email, and scoped API token (saved securely in `~/.sprout/auth.toml` with `chmod 600`).
 
 > [!NOTE]
 > No credentials or per-user configurations are ever stored within the repository.
@@ -105,25 +107,25 @@ The interactive wizard configures:
 
 ```bash
 # Standard workflow: Jira issue + default agent (Claude) + default method (BMad)
-jdw fix --issue FT-123
+sprout fix --issue FT-123
 
 # Choose a different agent (e.g., Antigravity CLI)
-jdw feat --issue FT-456 --agent agy
+sprout feat --issue FT-456 --agent agy
 
 # Combine a specific agent with the SCPE methodology
-jdw feat --issue FT-456 -a agy -m scpe
+sprout feat --issue FT-456 -a agy -m scpe
 
 # Launch Codex in interactive mode without an automated prompt
-jdw fix --issue FT-789 -a codex -m none
+sprout fix --issue FT-789 -a codex -m none
 
 # Create worktree and Herdr workspace without starting an agent
-jdw feat --issue FT-101 --no-agent
+sprout feat --issue FT-101 --no-agent
 
 # Create worktree only without creating a Herdr workspace
-jdw feat --issue FT-102 --no-herdr
+sprout feat --issue FT-102 --no-herdr
 
-# Create worktree without Jira (manual feature name and slug)
-jdw chore --feature cleanup-logs --slug prune-old-entries
+# Create worktree without an issue key (manual feature name and slug)
+sprout chore --feature cleanup-logs --slug prune-old-entries
 ```
 
 ### Command Options Reference
@@ -131,38 +133,38 @@ jdw chore --feature cleanup-logs --slug prune-old-entries
 | Option | Short | Description |
 | :--- | :--- | :--- |
 | `<type>` | — | Positional Conventional Commit type (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). |
-| `--issue <KEY>` | — | Jira issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.jdw/issue.json`. |
+| `--issue <KEY>` | — | Issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.sprout/issue.json`. |
 | `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`claude`, `agy`, `codex`, `gemini`). |
 | `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
-| `--feature <NAME>`| — | Directory name for the worktree (defaults to Jira issue key). |
-| `--slug <SLUG>` | — | Branch name slug (defaults to slugified Jira summary). |
+| `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key). |
+| `--slug <SLUG>` | — | Branch name slug (defaults to slugified issue summary). |
 | `--base <PATH>` | — | Base repository path (defaults to current Git repo, then `BASE_REPO`). |
 | `--dest <PATH>` | — | Explicit destination path for the worktree. |
 | `--no-agent` | — | Open Herdr workspace but do not start an agent. |
 | `--no-herdr` | — | Skip Herdr workspace creation altogether. |
-| `--configure-jira`| — | Reconfigure Jira credentials in `~/.jdw/auth.toml`. |
+| `--configure-jira`| — | Reconfigure Jira credentials in `~/.sprout/auth.toml`. |
 
 ---
 
 ## Extensibility & Architecture
 
-JDW is architected around clear separation of concerns:
+Sprout is architected around clean separation of concerns:
 
 ### 1. Pluggable Issue Trackers (Jira First)
-Currently, JDW natively integrates with **Atlassian Jira Cloud** using scoped API tokens and Cloud ID discovery. However, the internal architecture converts all ticket data into a tracker-neutral model:
-* `.jdw/issue.json`: Raw and normalized JSON payload.
-* `.jdw/issue.md`: Markdown summary.
+Currently, Sprout natively integrates with **Atlassian Jira Cloud** using scoped API tokens and Cloud ID discovery. However, the internal architecture converts all ticket data into a tracker-neutral model:
+* `.sprout/issue.json`: Raw and normalized JSON payload.
+* `.sprout/issue.md`: Markdown summary.
 
 Support for other providers (such as **Linear** and **GitHub Issues**) will plug directly into this normalized contract.
 
 ### 2. Pluggable Methodologies (BMad, SCPE & Custom)
-JDW does not enforce a rigid methodology. It ships with built-in templates:
+Sprout does not enforce a rigid methodology. It ships with built-in templates:
 * **BMad Method (`-m bmad`)**: Automatically addresses the master BMad orchestrator to kick off initiative analysis and product briefing.
 * **SCPE Method (`-m scpe`)**: Prompts the agent to structure rules (`R#`), scenarios (`S#`), and vertical slices following Spec-Compiled Product Engineering.
 * **None (`-m none`)**: Starts the agent in an interactive state with no initial prompt.
 
 ### 3. Multi-Agent Compatibility
-Because JDW integrates with [Herdr](https://herdr.dev), it benefits from Herdr's native agent detection and lifecycle monitoring across multiple agent CLIs:
+Because Sprout integrates with [Herdr](https://herdr.dev), it benefits from Herdr's native agent detection and lifecycle monitoring across multiple agent CLIs:
 * [Claude Code](https://github.com/anthropics/claude-code) (`claude`)
 * [Antigravity](https://deepmind.google/technologies/gemini/) (`agy`)
 * [Codex](https://openai.com) (`codex`)
@@ -174,7 +176,7 @@ Because JDW integrates with [Herdr](https://herdr.dev), it benefits from Herdr's
 
 * **[Architecture Guide](docs/architecture.md)**: Deep dive into the 3-tier design, data flows, and security model.
 * **[Workflows & Methodologies](docs/workflows.md)**: Details on configuring agents, prompt templates, and project defaults.
-* **[Phases & Evolution](docs/phases.md)**: The engineering milestones that shaped JDW.
+* **[Phases & Evolution](docs/phases.md)**: The engineering milestones that shaped Sprout.
 
 ---
 

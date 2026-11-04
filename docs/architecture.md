@@ -1,22 +1,22 @@
-# JDW Architecture
+# Sprout Architecture
 
-Jira Driven Worktree (JDW) is a developer-agent automation tool designed to bridge task tracking (Jira), Git version control (Worktrees), terminal workspace management (Herdr), and agentic workflows (BMad, SCPE, etc.).
+**Sprout** is a developer-agent automation tool designed to bridge task tracking (Jira, Linear, GitHub Issues), Git version control (Worktrees), terminal workspace management (Herdr), and agentic workflows (BMad, SCPE, etc.).
 
 ## System Overview
 
 ```mermaid
 flowchart TD
-    subgraph CLI ["JDW CLI (bin/jdw)"]
+    subgraph CLI ["Sprout CLI (bin/sprout)"]
         ArgParse["CLI Argument Parser (--issue, --agent, --method)"]
-        JiraAuth["Jira Scoped Auth & Cloud ID Discovery"]
+        TrackerAuth["Tracker Auth & Gateway Routing"]
         WorktreeMgr["Git Worktree Lifecycle Manager"]
-        NormModel["Normalized Issue Model (.jdw/issue.json)"]
+        NormModel["Normalized Issue Model (.sprout/issue.json)"]
     end
 
     subgraph Trackers ["Issue Trackers"]
         Jira["Atlassian Jira Cloud (Scoped REST API)"]
-        Linear["Linear (Future)"]
-        GitHub["GitHub Issues (Future)"]
+        Linear["Linear (Planned)"]
+        GitHub["GitHub Issues (Planned)"]
     end
 
     subgraph Terminal ["Workspace Management"]
@@ -36,8 +36,8 @@ flowchart TD
         Custom["Custom / Clean Workspace"]
     end
 
-    ArgParse --> JiraAuth
-    JiraAuth --> Jira
+    ArgParse --> TrackerAuth
+    TrackerAuth --> Jira
     Jira --> NormModel
     NormModel --> WorktreeMgr
     WorktreeMgr --> Herdr
@@ -56,7 +56,7 @@ flowchart TD
 - Communicates with Jira Cloud using Atlassian API Gateway (`https://api.atlassian.com/ex/jira/<cloudId>`) and scoped tokens.
 - Discovers the tenant Cloud ID via `/_edge/tenant_info`.
 - Resolves issue details (`summary`, `description`, `issuetype`, `status`, `priority`, `assignee`).
-- Decouples credentials (`~/.jdw/auth.toml`, chmod 600) from source repositories.
+- Decouples credentials (`~/.sprout/auth.toml`, chmod 600) from source repositories (with backward compatibility fallback to `~/.jdw/auth.toml`).
 
 ### 2. Git Worktree Layer
 - Auto-detects the canonical repository even when executed from an existing worktree (via `--git-common-dir`).
@@ -64,8 +64,8 @@ flowchart TD
 - Auto-generates clean, kebab-cased branch slugs from issue summaries.
 - Configures upstream tracking against `origin/main`.
 
-### 3. Normalized Issue Model (`.jdw/`)
-- Every worktree created via `jdw` contains a local `.jdw/` directory:
+### 3. Normalized Issue Model (`.sprout/`)
+- Every worktree created via `sprout` contains a local `.sprout/` directory:
   - `issue.json`: Machine-readable, normalized issue payload (key, summary, description plain-text, raw ADF fields, status, priority, web link).
   - `issue.md`: Human- and LLM-friendly markdown brief.
 - This creates an immutable contract between tracker and any downstream agent/methodology.
@@ -77,7 +77,7 @@ flowchart TD
 - Dispatches the initial prompt without blocking the developer's interactive session (`herdr agent prompt <name> <text>`).
 
 ### 5. Methodology Decoupling
-- `jdw` does **not** hardcode a single methodology.
+- `sprout` does **not** hardcode a single methodology.
 - Supports pluggable workflow templates:
   - `bmad`: Invokes the BMad master orchestrator to parse the issue and draft the initial product briefing.
   - `scpe`: Prompts the agent to begin vertical slicing and specification according to SCPE.
