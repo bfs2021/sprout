@@ -33,7 +33,7 @@ The BMad method uses an orchestrator skill (`bmad`) that guides analysis, produc
 - Begins drafting the initiative/briefing document (under `_bmad-output/`) and waits for your confirmation to continue.
 
 ### 2. SCPE Method (`-m scpe`)
-Spec-Compiled Product Engineering focuses on executable specs, vertical slices, and rules/scenarios.
+[Spec-Compiled Product Engineering (SCPE)](https://github.com/m4rc0s/scpe) focuses on executable specs, vertical slices, and rules/scenarios.
 
 **Prompt injected:**
 > *"SCPE: analise a issue <KEY> (<SUMMARY>) a partir de .sprout/issue.json. Inicie a especificação da feature de acordo com o método SCPE."*

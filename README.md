@@ -42,7 +42,7 @@ In seconds, Sprout:
 3. 📄 **Generates a normalized contract** (`.sprout/issue.json` and `.sprout/issue.md`) directly in the new worktree so agents have instant, structured access to requirements without web scraping or leaking credentials.
 4. 🖥️ **Spins up a focused workspace in [Herdr](https://herdr.dev)**, attaching a dedicated terminal pane to the new worktree.
 5. 🤖 **Launches your chosen AI coding agent** (e.g. Claude Code, Antigravity, or Codex) inside the Herdr pane.
-6. 🎯 **Injects an initial methodology prompt** (e.g. [BMad](https://github.com/bmad-code-org/BMAD-METHOD) or SCPE) to immediately trigger requirement analysis and draft an initial implementation brief.
+6. 🎯 **Injects an initial methodology prompt** (e.g. [BMad](https://github.com/bmad-code-org/BMAD-METHOD) or [SCPE](https://github.com/m4rc0s/scpe)) to immediately trigger requirement analysis and draft an initial implementation brief.
 
 You are left in an active, focused terminal with the agent already analyzing the ticket, ready for you to review and continue pair programming.
 
@@ -197,7 +197,7 @@ Support for other providers (such as **Linear** and **GitHub Issues**) will plug
 ### 2. Pluggable Methodologies (BMad, SCPE & Custom)
 Sprout does not enforce a rigid methodology. It ships with built-in templates:
 * **BMad Method (`-m bmad`)**: Automatically addresses the master BMad orchestrator to kick off initiative analysis and product briefing.
-* **SCPE Method (`-m scpe`)**: Prompts the agent to structure rules (`R#`), scenarios (`S#`), and vertical slices following Spec-Compiled Product Engineering.
+* **SCPE Method (`-m scpe`)**: Prompts the agent to structure rules (`R#`), scenarios (`S#`), and vertical slices following [Spec-Compiled Product Engineering (SCPE)](https://github.com/m4rc0s/scpe).
 * **None (`-m none`)**: Starts the agent in an interactive state with no initial prompt.
 
 ### 3. Multi-Agent Compatibility
