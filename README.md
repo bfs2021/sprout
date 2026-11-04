@@ -84,7 +84,7 @@ cp bin/sprout ~/.local/bin/sprout
 ```
 
 ### 2. Initialization
-Run `sprout init` from within your canonical base Git repository:
+Run `sprout init` from within your **canonical base Git repository**:
 
 ```bash
 cd ~/workspace/my-project
@@ -96,8 +96,45 @@ The interactive wizard configures:
 * **Defaults:** Default agent (`claude`, `agy`, `codex`) and workflow method (`bmad`, `scpe`, `none`).
 * **Tracker credentials:** Base URL, account email, and scoped API token (saved securely in `~/.sprout/auth.toml` with `chmod 600`).
 
-> [!NOTE]
-> No credentials or per-user configurations are ever stored within the repository.
+---
+
+## ⚙️ Configuration Architecture
+
+Sprout follows a strict **zero-secrets-in-repo** philosophy and uses Git's internal metadata architecture to share project configurations across worktrees.
+
+### Two Levels of Configuration
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. User Secrets (~/.sprout/auth.toml) — chmod 600                      │
+│    Stores global Jira/tracker credentials outside all Git trees        │
+└────────────────────────────────────────────────────────────────────────┘
+                                    │
+┌───────────────────────────────────┼────────────────────────────────────┐
+│ Canonical Base Repo               │ Linked Worktree (e.g. ../FT-123)   │
+│ .git/sprout/config.toml           │ .git (file pointing to common dir) │
+│ 2. Project Settings & Defaults    │ Automatically shares config.toml   │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+
+| Config File | Location | Permissions | Purpose |
+| :--- | :--- | :--- | :--- |
+| **User Secrets** | `~/.sprout/auth.toml` | `600` (dir `700`) | Personal API credentials (Jira site URL, email, scoped API token). Kept in your home directory, never committed. |
+| **Project Settings** | `<git-common-dir>/sprout/config.toml` | `600` | Project metadata (`name`, `github_repo`) and default selections (`agent`, `method`). Shared by all worktrees. |
+
+### Why Run `sprout init` in the Canonical Base Repo?
+
+`sprout init` requires you to run it from the root of your canonical base repository:
+
+1. 🔗 **Automatic Sharing Across Worktrees:**
+   Git worktrees share a central internal metadata store (`--git-common-dir`). By saving `config.toml` inside this shared Git directory, **every worktree spawned by Sprout automatically inherits the project configuration**, without duplicating files or writing to the source tree.
+
+2. 🛡️ **Zero Git Pollution & No Leaks:**
+   Because the file lives inside Git's internal administrative metadata (outside the tracked files), it never appears in `git status`, cannot be accidentally staged or committed, and requires zero `.gitignore` modifications.
+
+3. 📍 **No Hardcoded Absolute Paths:**
+   Sprout dynamically discovers the canonical base repository and its common directory at runtime via Git metadata. Even if you move or rename sibling directories, Sprout resolves paths accurately.
+
 
 ---
 
