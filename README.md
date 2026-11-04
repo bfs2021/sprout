@@ -1,45 +1,183 @@
-# JDW (Jira Driven Worktree)
+# JDW — Jira Driven Worktree
 
-A local developer & agent CLI that reads Jira issues, automates Git worktree creation, spins up dedicated workspaces in [Herdr](https://herdr.dev), and dispatches coding agents (Claude, Antigravity, Codex) using decoupled methodologies (BMad, SCPE).
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Git Worktree](https://img.shields.io/badge/Git-Worktree-orange.svg)](https://git-scm.com/docs/git-worktree)
+[![Multiplexer: Herdr](https://img.shields.io/badge/Multiplexer-Herdr-6c5ce7.svg)](https://herdr.dev)
+[![Agents: Multi--Agent](https://img.shields.io/badge/Agents-Claude%20%7C%20AGY%20%7C%20Codex-success.svg)](#supported-agents)
+
+> **One command from Jira issue to active coding agent in a focused terminal workspace.**
+
+JDW is an open-source developer workflow automation tool designed to eliminate the friction between task management, Git branches, terminal workspaces, and AI coding agents.
+
+---
+
+## The Problem: Friction Kills Developer Flow
+
+Starting a new implementation task usually involves a dozen repetitive, context-draining steps:
+1. Opening the browser, searching for the Jira ticket, and reading the requirements.
+2. Deriving a sensible branch name according to project conventions.
+3. Deciding whether to stash ongoing work or clone a new repository.
+4. Manually setting up a Git worktree linked to `origin/main`.
+5. Opening a new terminal tab/workspace and navigating to the destination.
+6. Launching an AI coding assistant (such as Claude Code, Antigravity, or Codex).
+7. Copy-pasting the issue description, summarizing context, and explaining the project methodology to the agent.
+
+This friction fragments focus, delays coding, and leads to messy branches and copy-paste errors.
+
+---
+
+## The Solution: One Command to Flow
+
+With **JDW**, a single terminal command handles the entire pipeline:
+
+```bash
+jdw fix --issue FT-123
+```
+
+In seconds, JDW:
+1. 📡 **Queries Jira Cloud** securely via Atlassian Scoped API Gateway to fetch the issue summary, description, type, priority, and metadata.
+2. 🌿 **Creates an isolated Git worktree** with a kebab-cased branch following Conventional Commits (`fix/fix-login-error`), tracking `origin/main`.
+3. 📄 **Generates a normalized contract** (`.jdw/issue.json` and `.jdw/issue.md`) directly in the new worktree so agents have instant, structured access to requirements without web scraping or leaking credentials.
+4. 🖥️ **Spins up a focused workspace in [Herdr](https://herdr.dev)**, attaching a dedicated terminal pane to the new worktree.
+5. 🤖 **Launches your chosen AI coding agent** (e.g. Claude Code, Antigravity, or Codex) inside the Herdr pane.
+6. 🎯 **Injects an initial methodology prompt** (e.g. [BMad](https://github.com/bmad-code-org/BMAD-METHOD) or SCPE) to immediately trigger requirement analysis and draft an initial implementation brief.
+
+You are left in an active, focused terminal with the agent already analyzing the ticket, ready for you to review and continue pair programming.
+
+---
+
+## System Flow
+
+```mermaid
+flowchart LR
+    A["jdw fix --issue FT-123"] --> B["1. Fetch Issue Data\n(Jira Cloud REST API)"]
+    B --> C["2. Create Git Worktree\n(origin/main tracking)"]
+    C --> D["3. Generate Normalized Contract\n(.jdw/issue.json & issue.md)"]
+    D --> E["4. Open Workspace in Herdr\n(herdr workspace create)"]
+    E --> F["5. Dispatch Agent & Prompt\n(Claude / AGY / Codex + BMad / SCPE)"]
+    F --> G["6. Developer in Flow\n(Active interactive terminal)"]
+```
+
+---
+
+## Prerequisites
+
+* **Git** (>= 2.30 with `worktree` support)
+* **Python 3.11+** (for TOML parsing and JSON normalization; uses standard library only)
+* **curl** & **jq**
+* **[Herdr](https://herdr.dev)** *(Required for workspace & agent orchestration)*:
+  JDW leverages Herdr's persistent daemon and socket API to programmatically create isolated workspaces, manage terminal panes, and orchestrate interactive coding agent lifecycles. Ensure Herdr is installed and running (`herdr status`).
 
 ---
 
 ## Quick Start
 
-### 1. Initialize project and credentials
-Run inside your canonical Git repository:
+### 1. Installation
+Clone this repository and add `bin/` to your `PATH`, or copy the executable:
+
 ```bash
+git clone https://github.com/your-org/jdw.git
+cd jdw
+cp bin/jdw ~/.local/bin/jdw
+```
+
+### 2. Initialization
+Run `jdw init` from within your canonical base Git repository:
+
+```bash
+cd ~/workspace/my-project
 jdw init
 ```
-This prompts for:
-* Project name and GitHub repo (saved in `<git-common-dir>/jdw/config.toml`)
-* Default agent (`claude`, `agy`, `codex`) and workflow method (`bmad`, `scpe`)
-* Jira base URL, Atlassian email, and API token (saved securely in `~/.jdw/auth.toml` with `chmod 600`)
 
-### 2. Create worktrees & launch agents
+The interactive wizard configures:
+* **Project metadata:** Project name and GitHub repository (saved under shared Git metadata at `<git-common-dir>/jdw/config.toml`).
+* **Defaults:** Default agent (`claude`, `agy`, `codex`) and workflow method (`bmad`, `scpe`, `none`).
+* **Jira credentials:** Base URL, account email, and scoped API token (saved securely in `~/.jdw/auth.toml` with `chmod 600`).
+
+> [!NOTE]
+> No credentials or per-user configurations are ever stored within the repository.
+
+---
+
+## Usage
+
+### Everyday Worktree Creation
 
 ```bash
-# Standard workflow: creates worktree, Herdr workspace, launches Claude with BMad
+# Standard workflow: Jira issue + default agent (Claude) + default method (BMad)
 jdw fix --issue FT-123
 
-# Choose a different agent (e.g. Antigravity) and methodology (e.g. SCPE):
-jdw feat --issue FT-456 --agent agy --method scpe
+# Choose a different agent (e.g., Antigravity CLI)
+jdw feat --issue FT-456 --agent agy
 
-# Use Codex without pre-submitting a prompt:
+# Combine a specific agent with the SCPE methodology
+jdw feat --issue FT-456 -a agy -m scpe
+
+# Launch Codex in interactive mode without an automated prompt
 jdw fix --issue FT-789 -a codex -m none
 
-# Create worktree only without launching an agent:
+# Create worktree and Herdr workspace without starting an agent
 jdw feat --issue FT-101 --no-agent
 
-# Without Jira issue:
-jdw chore --feature refactor-cache --slug cache-cleanup
+# Create worktree only without creating a Herdr workspace
+jdw feat --issue FT-102 --no-herdr
+
+# Create worktree without Jira (manual feature name and slug)
+jdw chore --feature cleanup-logs --slug prune-old-entries
 ```
+
+### Command Options Reference
+
+| Option | Short | Description |
+| :--- | :--- | :--- |
+| `<type>` | — | Positional Conventional Commit type (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). |
+| `--issue <KEY>` | — | Jira issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.jdw/issue.json`. |
+| `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`claude`, `agy`, `codex`, `gemini`). |
+| `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
+| `--feature <NAME>`| — | Directory name for the worktree (defaults to Jira issue key). |
+| `--slug <SLUG>` | — | Branch name slug (defaults to slugified Jira summary). |
+| `--base <PATH>` | — | Base repository path (defaults to current Git repo, then `BASE_REPO`). |
+| `--dest <PATH>` | — | Explicit destination path for the worktree. |
+| `--no-agent` | — | Open Herdr workspace but do not start an agent. |
+| `--no-herdr` | — | Skip Herdr workspace creation altogether. |
+| `--configure-jira`| — | Reconfigure Jira credentials in `~/.jdw/auth.toml`. |
+
+---
+
+## Extensibility & Architecture
+
+JDW is architected around clear separation of concerns:
+
+### 1. Pluggable Issue Trackers (Jira First)
+Currently, JDW natively integrates with **Atlassian Jira Cloud** using scoped API tokens and Cloud ID discovery. However, the internal architecture converts all ticket data into a tracker-neutral model:
+* `.jdw/issue.json`: Raw and normalized JSON payload.
+* `.jdw/issue.md`: Markdown summary.
+
+Support for other providers (such as **Linear** and **GitHub Issues**) will plug directly into this normalized contract.
+
+### 2. Pluggable Methodologies (BMad, SCPE & Custom)
+JDW does not enforce a rigid methodology. It ships with built-in templates:
+* **BMad Method (`-m bmad`)**: Automatically addresses the master BMad orchestrator to kick off initiative analysis and product briefing.
+* **SCPE Method (`-m scpe`)**: Prompts the agent to structure rules (`R#`), scenarios (`S#`), and vertical slices following Spec-Compiled Product Engineering.
+* **None (`-m none`)**: Starts the agent in an interactive state with no initial prompt.
+
+### 3. Multi-Agent Compatibility
+Because JDW integrates with [Herdr](https://herdr.dev), it benefits from Herdr's native agent detection and lifecycle monitoring across multiple agent CLIs:
+* [Claude Code](https://github.com/anthropics/claude-code) (`claude`)
+* [Antigravity](https://deepmind.google/technologies/gemini/) (`agy`)
+* [Codex](https://openai.com) (`codex`)
+* Gemini CLI (`gemini`)
 
 ---
 
 ## Documentation
 
-* **[Architecture](docs/architecture.md)**: System overview, layers, data flow, and normalized issue contract (`.jdw/issue.json`).
-* **[Workflows & Methodologies](docs/workflows.md)**: Agent configuration (`claude`, `agy`, `codex`) and workflow integration (`bmad`, `scpe`).
-* **[Phases & Milestones](docs/phases.md)**: Evolution log from manual worktrees to multi-agent automation.
-* **[Handoff Context](HANDOFF.md)**: Historical session notes and roadmap.
+* **[Architecture Guide](docs/architecture.md)**: Deep dive into the 3-tier design, data flows, and security model.
+* **[Workflows & Methodologies](docs/workflows.md)**: Details on configuring agents, prompt templates, and project defaults.
+* **[Phases & Evolution](docs/phases.md)**: The engineering milestones that shaped JDW.
+
+---
+
+## License
+
+MIT © [Marcos Araújo](https://github.com/mraraujo)
