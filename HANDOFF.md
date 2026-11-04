@@ -58,21 +58,12 @@ The token needs issue-read scope (`read:jira-work` or equivalent granular read s
 - Added Jira scoped-token support through Atlassian's API gateway and Cloud ID discovery.
 - Added clearer HTTP 401/403/404 diagnostics.
 
-## Verification status and known next step
+## Verification status and validation
 
-- `jdw --help` was checked after the init work.
-- `bash -n` passed after the interactive prompt fix and after the scoped-token routing changes.
-- `jdw init` completed before scoped-token routing was added.
-- **The scoped-token API request has not yet been validated end-to-end after the gateway change.** The next step is to run this from the Finance Tool canonical repo with an issue the account can browse:
-
-```bash
-cd ~/workspace/finance_tool
-jdw fix --issue FT-123
-```
-
-That command creates the worktree and branch if the Jira lookup succeeds; choose an issue whose target directory and branch do not already exist. If the API still fails, verify the token scopes include issue read access and inspect the new status-specific message. Do not print or share the token.
-
-The installed command and repo copy can diverge until an installer/symlink is created. Compare `$HOME/.local/bin/jdw` and `~/workspace/jdw/bin/jdw` before continuing development.
+- `jdw init` completed and validated.
+- `jdw fix --issue <KEY>` tested end-to-end by the user from `~/workspace/finance_tool` with real scoped Jira tokens: successful.
+- Phase 3 completed: added full issue payload extraction (`summary`, `description`, `issuetype`, `status`, `priority`), normalized contract in `.jdw/issue.json`, Herdr workspace creation (`herdr workspace create`), multi-agent selection (`-a claude|agy|codex`), and methodology decoupling (`-m bmad|scpe|none`).
+- Installed command synced with repository: `~/.local/bin/jdw`.
 
 ## Product architecture discussed
 
