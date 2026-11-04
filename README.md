@@ -67,6 +67,10 @@ flowchart LR
 * **Git** (>= 2.30 with `worktree` support)
 * **Python 3.11+** (for TOML parsing and JSON normalization; uses standard library only)
 * **curl** & **jq**
+* **Jira Account & API Token** *(Required for Jira issue lookups)*:
+  * An Atlassian account with browse/read access to your Jira projects.
+  * An **API Token** (standard or scoped token with `read:jira-work` scope).
+  * Generate one at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
 * **[Herdr](https://herdr.dev)** *(Required for workspace & agent orchestration)*:
   Sprout leverages Herdr's persistent daemon and socket API to programmatically create isolated workspaces, manage terminal panes, and orchestrate interactive coding agent lifecycles. Ensure Herdr is installed and running (`herdr status`).
 
@@ -94,7 +98,21 @@ sprout init
 The interactive wizard configures:
 * **Project metadata:** Project name and GitHub repository (saved under shared Git metadata at `<git-common-dir>/sprout/config.toml`).
 * **Defaults:** Default agent (`claude`, `agy`, `codex`) and workflow method (`bmad`, `scpe`, `none`).
-* **Tracker credentials:** Base URL, account email, and scoped API token (saved securely in `~/.sprout/auth.toml` with `chmod 600`).
+* **Jira credentials:** Site URL, account email, and API token (saved securely in `~/.sprout/auth.toml` with `chmod 600`).
+
+#### 🔑 Getting Your Jira API Token
+
+Sprout needs an API token to fetch issue titles, descriptions, and acceptance criteria without exposing your primary password:
+
+1. Log into your Atlassian account and navigate to **[Atlassian Security: API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)**.
+2. Click **Create API token**, give it a descriptive label (e.g., `sprout-cli`), and copy the generated token.
+3. **Required Scopes & Permissions:**
+   * Your Atlassian user account must have **Browse Projects** permission on the relevant Jira projects.
+   * If using Atlassian Scoped API Tokens, ensure the token includes the `read:jira-work` scope (or its granular issue read equivalents).
+4. Run `sprout init` and paste the token when prompted (input is hidden for security).
+
+> [!TIP]
+> Need to update or rotate your token later? Run `sprout --configure-jira` at any time to refresh your credentials without altering project settings.
 
 ---
 
