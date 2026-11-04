@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'HELP'
+Usage:
+  jdw <type> --feature <name> [--slug <branch-slug>] [--base <repo-path>] [--dest <worktree-path>]
+
+Types: feat, fix, doc, docs, style, refactor, perf, test, build, ci, chore, revert
+Options:
+  --feature NAME       Directory name
+  --slug SLUG          Branch slug; defaults to --feature
+  --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
+  --dest PATH          Full worktree destination; defaults to a sibling directory named after the feature
+  -h, --help           Show this help
+
+Examples:
+  jdw fix --feature fix-login-button --slug fix-login
+  jdw feat --feature ft_456 --slug loading-progress
+  jdw docs --feature guide-refresh
+HELP
+  exit 2
+}
+
+resolve_repository() {
+  local requested=$1 worktree_root common_dir
+  worktree_root=$(git -C "$requested" rev-parse --show-toplevel 2>/dev/null) || return 1
+  common_dir=$(git -C "$requested" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  common_dir=$(cd "$common_dir" && pwd -P) || return 1
+  printf '%s\n%s\n' "$(dirname "$common_dir")" "$common_dir"
+}
+
+types_regex='^(feat|fix|doc|docs|style|refactor|perf|test|build|ci|chore|revert)$'
+
+type=""
+feature=""
+slug=""
+base_repo=""
+dest_override=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    feat|fix|doc|docs|style|refactor|perf|test|build|ci|chore|revert)
+      [[ -z "$type" ]] || { printf 'Multiple types provided: %s and %s\n' "$type" "$1" >&2; exit 2; }
+      type=$1
+      shift
+      ;;
+    --feature)
+      [[ $# -ge 2 ]] || { printf 'Option --feature requires a value\n' >&2; exit 2; }
+      feature=$2
+      shift 2
+      ;;
+    --slug)
+      [[ $# -ge 2 ]] || { printf 'Option --slug requires a value\n' >&2; exit 2; }
+      slug=$2
+      shift 2
+      ;;
+    --base)
+      [[ $# -ge 2 ]] || { printf 'Option --base requires a value\n' >&2; exit 2; }
+      base_repo=$2
+      shift 2
+      ;;
+    --dest)
+      [[ $# -ge 2 ]] || { printf 'Option --dest requires a value\n' >&2; exit 2; }
+      dest_override=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "$1" >&2
+      usage
+      ;;
+  esac
+done
+
+[[ -n "$type" ]] || { printf 'A type argument is required.\n' >&2; usage; }
+[[ "$type" =~ $types_regex ]] || { printf 'Invalid type: %s\n' "$type" >&2; usage; }
+[[ -n "$feature" ]] || { printf 'Provide --feature.\n' >&2; usage; }
+
+slug=${slug:-$feature}
+[[ "$feature" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid feature name: %s\n' "$feature" >&2; exit 2; }
+[[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid branch slug: %s\n' "$slug" >&2; exit 2; }
+
+repo_candidate=""
+if [[ -n "$base_repo" ]]; then
+  repo_candidate=$base_repo
+elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  repo_candidate=$(pwd -P)
+elif [[ -n "${BASE_REPO:-}" ]]; then
+  repo_candidate=$BASE_REPO
+else
+  repo_candidate="$HOME/workspace/finance_tool"
+fi
+
+if [[ ! -d "$repo_candidate" ]]; then
+  printf 'Base repository directory does not exist: %s\n' "$repo_candidate" >&2
+  exit 1
+fi
+
+repo_paths=$(resolve_repository "$repo_candidate") || {
+  printf 'Directory is not part of a Git repository: %s\n' "$repo_candidate" >&2
+  exit 1
+}
+
+repo=$(head -n 1 <<< "$repo_paths")
+common_dir=$(tail -n 1 <<< "$repo_paths")
+
+if [[ -n "$dest_override" ]]; then
+  dest_parent=$(dirname "$dest_override")
+  dest_name=$(basename "$dest_override")
+  [[ -d "$dest_parent" ]] || { printf 'Destination parent does not exist: %s\n' "$dest_parent" >&2; exit 1; }
+  dest_parent=$(cd "$dest_parent" && pwd -P)
+  target="$dest_parent/$dest_name"
+else
+  target="$(dirname "$repo")/$feature"
+fi
+branch="$type/$slug"
+
+if [[ "$target" == "$repo" ]]; then
+  printf 'Destination conflicts with the base repository: %s\nChoose another path with --dest.\n' "$repo" >&2
+  exit 1
+fi
+if [[ -e "$target" ]]; then
+  printf 'Destination already exists: %s\nChoose another path with --dest.\n' "$target" >&2
+  exit 1
+fi
+if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+  printf 'Branch already exists: %s\n' "$branch" >&2
+  exit 1
+fi
+if ! git -C "$repo" show-ref --verify --quiet refs/remotes/origin/main; then
+  printf 'Missing origin/main in base repository. Fetch it before creating a worktree.\n' >&2
+  exit 1
+fi
+
+git -C "$repo" worktree add --track -b "$branch" "$target" origin/main
+printf '\nCreated worktree: %s\nBranch: %s (tracking origin/main)\nBase: %s\n' "$target" "$branch" "$repo"
+printf 'To enter it: cd %q\n' "$target"
