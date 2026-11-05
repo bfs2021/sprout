@@ -17,7 +17,7 @@ Types: feat, fix, doc, docs, style, refactor, perf, test, build, ci, chore, reve
 Options:
   --issue KEY          Issue key (e.g. Jira); fetches details to generate branch slug and .sprout/issue.json
   --feature NAME       Directory name; defaults to the issue key when --issue is used
-  --slug SLUG          Branch slug; defaults to the issue summary when --issue is used, otherwise --feature
+  --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
   -a, --agent NAME     Agent to launch in Herdr workspace (claude, agy, codex, gemini). Default: claude
@@ -359,11 +359,6 @@ if [[ -n "$issue" ]]; then
     exit 1
   }
   feature=${feature:-$issue}
-  if [[ -z "$slug" ]]; then
-    slug=$(printf '%s' "$summary" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
-      | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-60 | sed -E 's/-+$//')
-    [[ -n "$slug" ]] || { printf 'Could not create a branch slug from Jira summary: %s\n' "$summary" >&2; exit 1; }
-  fi
 fi
 
 [[ -n "$feature" ]] || { printf 'Provide --issue or --feature.\n' >&2; usage; }

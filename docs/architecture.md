@@ -50,18 +50,47 @@ flowchart TD
     Codex --> Custom
 ```
 
+## Configuration & Secrets Layer
+
+Sprout follows a strict **zero-secrets-in-repo** philosophy and uses Git's internal metadata to share project configuration across worktrees, split into two levels:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. User Secrets (~/.sprout/auth.toml) — chmod 600                      │
+│    Stores global Jira/tracker credentials outside all Git trees        │
+└────────────────────────────────────────────────────────────────────────┘
+                                    │
+┌───────────────────────────────────┼────────────────────────────────────┐
+│ Canonical Base Repo               │ Linked Worktree (e.g. ../FT-123)   │
+│ .git/sprout/config.toml           │ .git (file pointing to common dir) │
+│ 2. Project Settings & Defaults    │ Automatically shares config.toml   │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+
+| Config File | Location | Permissions | Purpose |
+| :--- | :--- | :--- | :--- |
+| **User Secrets** | `~/.sprout/auth.toml` | `600` (dir `700`) | Personal API credentials (Jira site URL, email, scoped API token). Kept in your home directory, never committed. |
+| **Project Settings** | `<git-common-dir>/sprout/config.toml` | `600` | Project metadata (`name`, `github_repo`) and default selections (`agent`, `method`). Shared by all worktrees. |
+
+### Why `sprout init` Must Run in the Canonical Base Repo
+
+1. 🔗 **Automatic sharing across worktrees:** Git worktrees share a central internal metadata store (`--git-common-dir`). Saving `config.toml` inside this shared Git directory means every worktree spawned by Sprout automatically inherits the project configuration, without duplicating files or writing to the source tree.
+2. 🛡️ **Zero Git pollution & no leaks:** Because the file lives inside Git's internal administrative metadata (outside the tracked files), it never appears in `git status`, cannot be accidentally staged or committed, and requires zero `.gitignore` modifications.
+3. 📍 **No hardcoded absolute paths:** Sprout dynamically discovers the canonical base repository and its common directory at runtime via Git metadata. Even if you move or rename sibling directories, Sprout resolves paths accurately.
+
 ## Architectural Layers
 
 ### 1. Tracker & Auth Layer
 - Communicates with Jira Cloud using Atlassian API Gateway (`https://api.atlassian.com/ex/jira/<cloudId>`) and scoped tokens.
 - Discovers the tenant Cloud ID via `/_edge/tenant_info`.
 - Resolves issue details (`summary`, `description`, `issuetype`, `status`, `priority`, `assignee`).
+- Converts all ticket data into the tracker-neutral `.sprout/` contract below, so other providers (Linear, GitHub Issues) can plug in without changing downstream consumers.
 - Decouples credentials (`~/.sprout/auth.toml`, chmod 600) from source repositories (with backward compatibility fallback to `~/.jdw/auth.toml`).
 
 ### 2. Git Worktree Layer
 - Auto-detects the canonical repository even when executed from an existing worktree (via `--git-common-dir`).
 - Enforces Conventional Commit branch naming conventions (`feat/<slug>`, `fix/<slug>`).
-- Auto-generates clean, kebab-cased branch slugs from issue summaries.
+- Defaults the branch slug to the issue key (e.g. `fix/ft-123`); pass `--slug` for a custom, descriptive slug instead.
 - Configures upstream tracking against `origin/main`.
 
 ### 3. Normalized Issue Model (`.sprout/`)

@@ -29,7 +29,7 @@ This document records the developmental milestones and capabilities introduced a
     - User secrets: `$HOME/.sprout/auth.toml` (chmod 600, dir chmod 700).
     - Project metadata: `<git-common-dir>/sprout/config.toml` (shared across worktrees, untracked by source control).
   - Interactive onboarding wizard via `sprout init`.
-  - Automatic generation of branch slugs based on issue summaries: `--issue <KEY>`.
+  - Automatic branch slug derived from the issue key: `--issue <KEY>`.
 
 ---
 
