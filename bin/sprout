@@ -484,7 +484,11 @@ if [[ "$no_herdr" != "true" ]] && command -v herdr >/dev/null 2>&1; then
     if [[ "$no_agent" != "true" && -n "$pane_id" ]]; then
       safe_agent_name=$(printf 'agent-%s' "$workspace_label" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | cut -c1-30)
       printf 'Starting agent %s (kind: %s) in Herdr pane %s...\n' "$safe_agent_name" "$agent" "$pane_id"
-      if herdr agent start "$safe_agent_name" --kind "$agent" --pane "$pane_id" 2>/dev/null; then
+      agent_extra_args=()
+      if [[ "$agent" == "agy" ]]; then
+        agent_extra_args=(-- --new-project --project "$workspace_label")
+      fi
+      if herdr agent start "$safe_agent_name" --kind "$agent" --pane "$pane_id" "${agent_extra_args[@]}" 2>/dev/null; then
         method_prompt=""
         case "$method" in
           bmad)
