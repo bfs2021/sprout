@@ -51,3 +51,14 @@ This document records the developmental milestones and capabilities introduced a
 - Rebranded from JDW to **Sprout** to reflect a tracker-agnostic, developer-flow-first identity.
 - Added backwards compatibility aliases and directory fallbacks.
 - Documentation and CLI polished for open-source publication.
+
+---
+
+## Phase 5: Smart Agent Router & Telemetry
+- **Goal:** Intelligent agent selection based on remaining session budget, cooldown tracking, and live Herdr concurrency.
+- **Key Capabilities:**
+  - Repository-wide telemetry store in `<git-common-dir>/sprout/agents_status.json`.
+  - Subcommands: `sprout agent status`, `sprout agent cooldown`, and `sprout agent reset`.
+  - `--agent auto` smart selection balancing Herdr load and cooldown timers.
+  - Transparent developer feedback on routing decisions.
+

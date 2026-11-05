@@ -69,11 +69,29 @@ Sprout fetches the issue, creates a `fix/FT-123` worktree tracking `origin/main`
 
 ## Usage
 
+### Smart Agent Telemetry & Management
+
+Sprout includes a built-in **Smart Agent Router** that monitors live Herdr session counts and cooldown windows to dynamically pick the best available agent:
+
 ```bash
-# Standard workflow: Jira issue + default agent (Claude) + default method (BMad)
+# View live agent telemetry, active Herdr sessions, and cooldowns
+sprout agent status
+
+# Place an agent in cooldown (e.g., when reaching a 5h token cap or rate limit)
+sprout agent cooldown claude --for 2h --reason "5h token limit reached"
+
+# Reset cooldowns manually
+sprout agent reset claude
+sprout agent reset          # Resets all agents
+```
+
+### Worktree Creation
+
+```bash
+# Smart Router workflow (picks the least saturated agent not in cooldown)
 sprout fix --issue FT-123
 
-# Choose a different agent (e.g., Antigravity CLI)
+# Explicitly override the agent selection
 sprout feat --issue FT-456 --agent agy
 
 # Combine a specific agent with the SCPE methodology
@@ -98,7 +116,7 @@ sprout chore --feature cleanup_logs --slug prune_old_entries
 | :--- | :--- | :--- |
 | `<type>` | — | Positional Conventional Commit type (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). |
 | `--issue <KEY>` | — | Issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.sprout/issue.json`. |
-| `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`claude`, `agy`, `codex`, `gemini`). |
+| `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`auto`, `claude`, `agy`, `codex`, `gemini`). Default: `auto` (Smart Router). |
 | `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
 | `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key; lowercased with hyphens converted to underscores). |
 | `--slug <SLUG>` | — | Branch name slug (defaults to the issue key when `--issue` is used, otherwise `--feature`; lowercased with hyphens converted to underscores). |
