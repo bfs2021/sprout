@@ -11,7 +11,13 @@ usage() {
   cat >&2 <<'HELP'
 Usage:
   sprout init
+  sprout agent <status|cooldown|reset> [options]
   sprout <type> (--issue <ISSUE-KEY> | --feature <name>) [options]
+
+Agent Management:
+  sprout agent status                          View agent telemetry, cooldowns, and live Herdr sessions
+  sprout agent cooldown <name> [--for <dur>]   Place agent in cooldown (e.g. --for 2h, --until 18:30)
+  sprout agent reset [name]                    Clear cooldown for specified agent (or all agents)
 
 Types: feat, fix, doc, docs, style, refactor, perf, test, build, ci, chore, revert
 Options:
@@ -20,7 +26,7 @@ Options:
   --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature; lowercased with hyphens converted to underscores
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
-  -a, --agent NAME     Agent to launch in Herdr workspace (claude, agy, codex, gemini). Default: claude
+  -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex, gemini). Default: auto
   -m, --method NAME    Workflow/methodology template (bmad, scpe, none). Default: bmad
   --no-agent           Create worktree and Herdr workspace without launching an agent
   --no-herdr           Create worktree only without creating a Herdr workspace
@@ -32,6 +38,9 @@ and defaults under shared Git metadata, and tracker credentials in $HOME/.sprout
 
 Examples:
   sprout init
+  sprout agent status
+  sprout agent cooldown claude --for 2h --reason "5h token window reached"
+  sprout agent reset claude
   sprout fix --issue FT-123
   sprout feat --issue FT-456 --agent agy --method scpe
   sprout feat --issue FT-456 --feature ft_456 --slug loading_progress
@@ -48,8 +57,190 @@ resolve_repository() {
   printf '%s\n%s\n' "$(dirname "$common_dir")" "$common_dir"
 }
 
+manage_agent_subcommand() {
+  local subcmd=${1:-status}
+  shift || true
+  
+  local cur_repo resolved common_dir status_file
+  cur_repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if [[ -z "$cur_repo" ]]; then
+    cur_repo=$(pwd -P)
+  fi
+  resolved=$(resolve_repository "$cur_repo" 2>/dev/null || true)
+  if [[ -z "$resolved" ]]; then
+    resolved=$(resolve_repository "${BASE_REPO:-$HOME/workspace/finance_tool}" 2>/dev/null || true)
+  fi
+  if [[ -z "$resolved" ]]; then
+    printf 'Error: sprout agent must be run inside or alongside a Git repository.\n' >&2
+    exit 1
+  fi
+  common_dir=$(sed -n '2p' <<< "$resolved")
+  status_file="$common_dir/sprout/agents_status.json"
+
+  python3 - "$status_file" "$subcmd" "$@" <<'PYAGENT'
+import sys, json, os, re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+status_file = Path(sys.argv[1])
+subcmd = sys.argv[2]
+args = sys.argv[3:]
+
+default_state = {
+    "agents": {
+        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "reason": ""},
+        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3, "last_used": None, "reason": ""},
+        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "reason": ""}
+    }
+}
+
+data = default_state
+if status_file.exists():
+    try:
+        with open(status_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = default_state
+
+agents = data.setdefault("agents", default_state["agents"])
+now = datetime.now().astimezone()
+
+def save_state():
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(status_file.parent, 0o700)
+    except Exception:
+        pass
+    data["updated_at"] = now.isoformat()
+    with open(status_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    try:
+        os.chmod(status_file, 0o600)
+    except Exception:
+        pass
+
+# Auto-recover expired cooldowns
+for name, info in agents.items():
+    cd = info.get("cooldown_until")
+    if cd:
+        try:
+            cd_dt = datetime.fromisoformat(cd)
+            if cd_dt <= now:
+                info["status"] = "available"
+                info["cooldown_until"] = None
+                info["reason"] = ""
+        except Exception:
+            pass
+
+if subcmd == "status":
+    herdr_counts = {}
+    import subprocess
+    try:
+        out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+        h_data = json.loads(out)
+        for ag in h_data.get("result", {}).get("agents", []):
+            k = ag.get("agent")
+            if k:
+                herdr_counts[k] = herdr_counts.get(k, 0) + 1
+    except Exception:
+        pass
+
+    print("\n🌱 Sprout Smart Agent Telemetry & Status")
+    print(f"Store: {status_file}\n")
+    print(f"{'AGENT':<10} {'STATUS':<12} {'ACTIVE SESSIONS':<18} {'COOLDOWN UNTIL':<25} {'PRIORITY':<8}")
+    print("-" * 75)
+    for name, info in sorted(agents.items(), key=lambda x: x[1].get("priority", 99)):
+        cd = info.get("cooldown_until") or "—"
+        if cd != "—":
+            try:
+                cd_dt = datetime.fromisoformat(cd)
+                cd = cd_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        st = info.get("status", "available").upper()
+        active = f"{herdr_counts.get(name, 0)} (max {info.get('max_concurrency', 2)})"
+        pri = str(info.get("priority", 1))
+        print(f"{name:<10} {st:<12} {active:<18} {cd:<25} {pri:<8}")
+        if info.get("reason"):
+            print(f"  └─ Reason: {info.get('reason')}")
+    print("")
+
+elif subcmd == "cooldown":
+    if not args:
+        print("Usage: sprout agent cooldown <agent-name> [--for <duration: 30m, 2h, 1d>] [--until <HH:MM|ISO>] [--reason <text>]", file=sys.stderr)
+        sys.exit(1)
+    agent_name = args[0].lower()
+    if agent_name not in agents:
+        agents[agent_name] = {"priority": 99, "status": "available", "cooldown_until": None, "max_concurrency": 2}
+    
+    duration = "2h"
+    until_val = None
+    reason = ""
+    i = 1
+    while i < len(args):
+        if args[i] == "--for" and i + 1 < len(args):
+            duration = args[i+1]
+            i += 2
+        elif args[i] == "--until" and i + 1 < len(args):
+            until_val = args[i+1]
+            i += 2
+        elif args[i] == "--reason" and i + 1 < len(args):
+            reason = args[i+1]
+            i += 2
+        else:
+            i += 1
+    
+    cd_dt = None
+    if until_val:
+        m_time = re.fullmatch(r"(\d{1,2}):(\d{2})", until_val)
+        if m_time:
+            h, mn = int(m_time.group(1)), int(m_time.group(2))
+            cd_dt = now.replace(hour=h, minute=mn, second=0, microsecond=0)
+            if cd_dt <= now:
+                cd_dt += timedelta(days=1)
+        else:
+            cd_dt = datetime.fromisoformat(until_val)
+    else:
+        m = re.fullmatch(r"(\d+)([mhd])", duration.strip())
+        if not m:
+            print(f"Invalid duration: {duration}. Use e.g. 30m, 2h, 1d.", file=sys.stderr)
+            sys.exit(1)
+        val, unit = int(m.group(1)), m.group(2)
+        delta = timedelta(minutes=val) if unit == "m" else (timedelta(hours=val) if unit == "h" else timedelta(days=val))
+        cd_dt = now + delta
+    
+    agents[agent_name]["status"] = "cooldown"
+    agents[agent_name]["cooldown_until"] = cd_dt.isoformat()
+    agents[agent_name]["reason"] = reason
+    save_state()
+    print(f"Agent '{agent_name}' set to COOLDOWN until {cd_dt.strftime('%Y-%m-%d %H:%M:%S')}.")
+
+elif subcmd == "reset":
+    target = args[0].lower() if args else None
+    if target:
+        if target in agents:
+            agents[target]["status"] = "available"
+            agents[target]["cooldown_until"] = None
+            agents[target]["reason"] = ""
+            print(f"Cooldown reset for agent '{target}'.")
+        else:
+            print(f"Agent '{target}' not found.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        for info in agents.values():
+            info["status"] = "available"
+            info["cooldown_until"] = None
+            info["reason"] = ""
+        print("Cooldown reset for all agents.")
+    save_state()
+
+else:
+    print(f"Unknown agent subcommand: {subcmd}. Available: status, cooldown, reset", file=sys.stderr)
+    sys.exit(1)
+PYAGENT
+}
+
 configure_jira() {
-  # Write to ~/.sprout/auth.toml by default
   local target_auth="$HOME/.sprout/auth.toml"
   python3 - "$target_auth" <<'PYCONFIG'
 import getpass
@@ -128,7 +319,7 @@ project_config = Path(sys.argv[2])
 auth_config = Path(sys.argv[3])
 project_name = input("Project name: ").strip()
 github_repo = input("GitHub repository (owner/repo or URL): ").strip()
-default_agent = input("Default agent (claude, agy, codex) [claude]: ").strip() or "claude"
+default_agent = input("Default agent (auto, claude, agy, codex) [auto]: ").strip() or "auto"
 default_method = input("Default workflow/method (bmad, scpe, none) [bmad]: ").strip() or "bmad"
 
 jira_url = input("Jira base URL (for example https://company.atlassian.net): ").strip().rstrip("/")
@@ -176,6 +367,11 @@ print(f"Base repository detected as {base_repo}; its path was not saved in eithe
 PYINIT
 }
 
+if [[ "${1:-}" == "agent" ]]; then
+  shift
+  manage_agent_subcommand "$@"
+  exit 0
+fi
 if [[ "${1:-}" == "init" ]]; then
   [[ $# -eq 1 ]] || usage
   init_project
@@ -279,8 +475,100 @@ PYPROJECT
   if [[ ${#project_values[@]} -ge 4 ]]; then default_method=$(printf '%s' "${project_values[3]}" | base64 --decode); fi
 fi
 
-agent=${agent_opt:-${default_agent:-claude}}
+agent=${agent_opt:-${default_agent:-auto}}
 method=${method_opt:-${default_method:-bmad}}
+
+# Execute Smart Agent Router if agent is set to 'auto'
+if [[ "$agent" == "auto" ]]; then
+  status_file="$common_dir/sprout/agents_status.json"
+  router_output=$(python3 - "$status_file" <<'PYROUTE'
+import sys, json, os, subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+status_file = Path(sys.argv[1])
+default_state = {
+    "agents": {
+        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2},
+        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3},
+        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2}
+    }
+}
+data = default_state
+if status_file.exists():
+    try:
+        with open(status_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = default_state
+
+agents = data.setdefault("agents", default_state["agents"])
+now = datetime.now().astimezone()
+
+herdr_counts = {}
+try:
+    out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+    h_data = json.loads(out)
+    for ag in h_data.get("result", {}).get("agents", []):
+        k = ag.get("agent")
+        if k:
+            herdr_counts[k] = herdr_counts.get(k, 0) + 1
+except Exception:
+    pass
+
+available_candidates = []
+cooldown_notes = []
+
+for name, info in agents.items():
+    cd = info.get("cooldown_until")
+    is_cd = False
+    if cd:
+        try:
+            cd_dt = datetime.fromisoformat(cd)
+            if cd_dt > now:
+                is_cd = True
+                cooldown_notes.append(f"{name} in cooldown until {cd_dt.strftime('%H:%M')}")
+            else:
+                info["status"] = "available"
+                info["cooldown_until"] = None
+        except Exception:
+            pass
+    active = herdr_counts.get(name, 0)
+    priority = info.get("priority", 99)
+    if not is_cd:
+        available_candidates.append((active, priority, name))
+
+selected_agent = None
+rationale = ""
+
+if available_candidates:
+    available_candidates.sort() # lowest active sessions first, then highest priority
+    selected_agent = available_candidates[0][2]
+    active_cnt = available_candidates[0][0]
+    cd_text = f"; {', '.join(cooldown_notes)}" if cooldown_notes else ""
+    rationale = f"lowest active load: {active_cnt} sessions{cd_text}"
+else:
+    sorted_all = sorted(agents.items(), key=lambda x: x[1].get("priority", 99))
+    selected_agent = sorted_all[0][0]
+    rationale = "Warning: All agents in cooldown, selecting fallback by priority"
+
+if selected_agent in agents:
+    agents[selected_agent]["last_used"] = now.isoformat()
+    try:
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.chmod(status_file, 0o600)
+    except Exception:
+        pass
+
+print(f"{selected_agent}\t{rationale}")
+PYROUTE
+  )
+  agent=$(awk -F'\t' '{print $1}' <<< "$router_output")
+  router_rationale=$(awk -F'\t' '{print $2}' <<< "$router_output")
+  printf '\n🌱 [Smart Router] Selected agent: %s (%s)\n' "$agent" "$router_rationale"
+fi
 
 JIRA_BASE_URL=${JIRA_BASE_URL:-}
 JIRA_EMAIL=${JIRA_EMAIL:-}
@@ -359,14 +647,13 @@ if [[ -n "$issue" ]]; then
     exit 1
   }
   feature=${feature:-$issue}
+  feature=$(printf '%s' "$feature" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
+  slug=${slug:-$issue}
+  slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
 fi
 
 [[ -n "$feature" ]] || { printf 'Provide --issue or --feature.\n' >&2; usage; }
-feature=${feature,,}
-feature=${feature//-/_}
 slug=${slug:-$feature}
-slug=${slug,,}
-slug=${slug//-/_}
 [[ "$feature" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid feature name: %s\n' "$feature" >&2; exit 2; }
 [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid branch slug: %s\n' "$slug" >&2; exit 2; }
 
@@ -406,7 +693,6 @@ printf '\nCreated worktree: %s\nBranch: %s (tracking origin/main)\nBase: %s\n' "
 # Generate normalized issue model (.sprout/issue.json and .sprout/issue.md)
 if [[ -n "$issue" && -n "$response_file" && -f "$response_file" ]]; then
   mkdir -p "$target/.sprout"
-  # Backwards compatibility symlink for .jdw
   ln -sfn .sprout "$target/.jdw" 2>/dev/null || true
 
   python3 - "$response_file" "$target/.sprout" "$issue" "$jira_host" <<'PYNORM'

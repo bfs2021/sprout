@@ -8,12 +8,35 @@ Any agent supported by Herdr can be passed via `--agent` (or `-a`):
 
 | Agent | CLI Flag | Canonical Command | Description |
 | :--- | :--- | :--- | :--- |
+| **Auto (Smart Router)** | `-a auto` | *Dynamic* | Balances load across available agents based on cooldowns & Herdr sessions |
 | **Claude Code** | `-a claude` | `claude` | Anthropic's interactive agentic CLI |
 | **Antigravity** | `-a agy` | `agy` | Google Deepmind's agentic CLI |
 | **Codex** | `-a codex` | `codex` | OpenAI / custom Codex CLI |
 | **Gemini** | `-a gemini` | `gemini` | Gemini CLI integration |
 
-If omitted, the default is configured in `<git-common-dir>/sprout/config.toml` or falls back to `claude`.
+If omitted, the default is configured in `<git-common-dir>/sprout/config.toml` or defaults to `auto`.
+
+### Smart Agent Router & Telemetry
+
+Sprout includes a telemetry store at `<git-common-dir>/sprout/agents_status.json` that tracks cooldowns, reasons, and priorities:
+
+```bash
+# View live telemetry
+sprout agent status
+
+# Place an agent in cooldown (e.g., when reaching a 5-hour window or token limit)
+sprout agent cooldown claude --for 2h --reason "5h token limit reached"
+
+# Reset cooldown
+sprout agent reset claude
+```
+
+**Selection Algorithm:**
+1. **Cooldown check:** Excludes agents whose `cooldown_until` is in the future. Expired cooldowns automatically self-heal.
+2. **Concurrency balancing:** Queries Herdr's live agent sessions via socket and picks the candidate with the fewest active sessions.
+3. **Priority tie-breaking:** Resolves ties using the agent priority hierarchy (e.g., Claude > AGY > Codex).
+4. **Graceful degradation:** If all agents are in cooldown, falls back to the highest priority candidate with a clear warning.
+
 
 ---
 
