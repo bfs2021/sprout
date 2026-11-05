@@ -90,7 +90,7 @@ Sprout follows a strict **zero-secrets-in-repo** philosophy and uses Git's inter
 ### 2. Git Worktree Layer
 - Auto-detects the canonical repository even when executed from an existing worktree (via `--git-common-dir`).
 - Enforces Conventional Commit branch naming conventions (`feat/<slug>`, `fix/<slug>`).
-- Defaults the branch slug to the issue key (e.g. `fix/ft-123`); pass `--slug` for a custom, descriptive slug instead.
+- Defaults the branch slug to the issue key, lowercased with hyphens converted to underscores (e.g. `fix/ft_123`); pass `--slug` for a custom, descriptive slug instead.
 - Configures upstream tracking against `origin/main`.
 
 ### 3. Normalized Issue Model (`.sprout/`)

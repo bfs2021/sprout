@@ -16,8 +16,8 @@ Usage:
 Types: feat, fix, doc, docs, style, refactor, perf, test, build, ci, chore, revert
 Options:
   --issue KEY          Issue key (e.g. Jira); fetches details to generate branch slug and .sprout/issue.json
-  --feature NAME       Directory name; defaults to the issue key when --issue is used
-  --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature
+  --feature NAME       Directory name; defaults to the issue key when --issue is used; lowercased with hyphens converted to underscores
+  --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature; lowercased with hyphens converted to underscores
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
   -a, --agent NAME     Agent to launch in Herdr workspace (claude, agy, codex, gemini). Default: claude
@@ -34,7 +34,7 @@ Examples:
   sprout init
   sprout fix --issue FT-123
   sprout feat --issue FT-456 --agent agy --method scpe
-  sprout feat --issue FT-456 --feature ft_456 --slug loading-progress
+  sprout feat --issue FT-456 --feature ft_456 --slug loading_progress
   sprout docs --feature guide-refresh --agent codex
 HELP
   exit 2
@@ -362,7 +362,11 @@ if [[ -n "$issue" ]]; then
 fi
 
 [[ -n "$feature" ]] || { printf 'Provide --issue or --feature.\n' >&2; usage; }
+feature=${feature,,}
+feature=${feature//-/_}
 slug=${slug:-$feature}
+slug=${slug,,}
+slug=${slug//-/_}
 [[ "$feature" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid feature name: %s\n' "$feature" >&2; exit 2; }
 [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid branch slug: %s\n' "$slug" >&2; exit 2; }
 

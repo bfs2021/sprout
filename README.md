@@ -89,7 +89,7 @@ sprout feat --issue FT-101 --no-agent
 sprout feat --issue FT-102 --no-herdr
 
 # Create worktree without an issue key (manual feature name and slug)
-sprout chore --feature cleanup-logs --slug prune-old-entries
+sprout chore --feature cleanup_logs --slug prune_old_entries
 ```
 
 ### Command Options Reference
@@ -100,8 +100,8 @@ sprout chore --feature cleanup-logs --slug prune-old-entries
 | `--issue <KEY>` | — | Issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.sprout/issue.json`. |
 | `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`claude`, `agy`, `codex`, `gemini`). |
 | `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
-| `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key). |
-| `--slug <SLUG>` | — | Branch name slug (defaults to the issue key when `--issue` is used, otherwise `--feature`). |
+| `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key; lowercased with hyphens converted to underscores). |
+| `--slug <SLUG>` | — | Branch name slug (defaults to the issue key when `--issue` is used, otherwise `--feature`; lowercased with hyphens converted to underscores). |
 | `--base <PATH>` | — | Base repository path (defaults to current Git repo, then `BASE_REPO`). |
 | `--dest <PATH>` | — | Explicit destination path for the worktree. |
 | `--no-agent` | — | Open Herdr workspace but do not start an agent. |
