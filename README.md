@@ -100,23 +100,33 @@ You can override the model explicitly at any time with `--model <name>`:
 sprout feat --issue FT-123 --model claude-3-5-sonnet-20241022
 ```
 
-### Context Compaction & Warm-Start Session Recycling
+### Context Compaction & Autonomous Sentinel Watcher
 
-When an agent session runs for extended periods, the context window can balloon (>80k tokens), causing attention drift, slow response times, and instruction amnesia. Sprout provides zero-amnesia **Session Recycling**:
+When an agent session runs for extended periods, the context window can balloon (>80k tokens), causing attention drift, slow response times, and instruction amnesia. Sprout provides zero-amnesia **Session Recycling** and a **100% Non-LLM Autonomous Watcher**:
 
 ```bash
-# Check current session context and Herdr pane status
+# Check current session context, Herdr pane status, and watcher state
 sprout session status
 
 # Snapshot state to .sprout/handoff.md and restart agent with a fresh context window
 sprout session recycle
+
+# Run the autonomous sentinel watcher daemon in background
+sprout session watch --daemon
+
+# Check or stop the autonomous watcher
+sprout session watch --status
+sprout session watch --stop
 ```
 
 `sprout session recycle`:
 1. Snapshots git diffs, changed files, recent commits, and issue context into `.sprout/handoff.md`.
-2. Cleanly terminates the bloated agent process in Herdr.
+2. Cleanly terminates the bloated agent process in Herdr (handling interactive shells without `agent_pane_busy` errors).
 3. Relaunches a fresh session in the same pane with a clean context window (~3k tokens).
 4. Submits an automatic warm-start prompt instructing the agent to resume seamlessly from `.sprout/handoff.md`.
+
+The **Sentinel Watcher** (`sprout session watch --daemon`) monitors file size on disk (`transcript.jsonl`) and scrollback lines without consuming any LLM tokens. When sessions exceed the threshold (120KB), it automatically triggers the handoff cycle while you focus on other work.
+
 
 ### Worktree Creation
 

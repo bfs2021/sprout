@@ -24,46 +24,44 @@ This initiative introduces a **zero-dependency, 100% local Control Plane** direc
 
 ## Requirements
 
-### R1: Deterministic Task-Based Model Tiering
-**Given** a task branch type (e.g. `feat`, `fix`, `docs`, `chore`)
-**When** Sprout resolves model parameters
-**Then** it classifies the task into a model tier:
-- `feat`, `fix`, `refactor`, `perf`, `spike` -> `frontier` (deep reasoning)
-- `test`, `build` -> `balanced` (standard implementation)
-- `doc`, `docs`, `chore`, `style`, `ci`, `revert` -> `fast` (lightweight / cost-effective)
-**And** executes locally with zero external network requests or API keys.
+### R1: Weighted Semantic Complexity Engine
+**Given** an issue summary, description, conventional commit type, issue type, and priority
+**When** Sprout resolves the task requirements
+**Then** it computes a **Complexity Score ($C$)** and **Uncertainty/Risk Score ($U$)** using weighted lexical matrices:
+- $C \ge 4 \implies$ `frontier` tier; $1 \le C < 4 \implies$ `balanced` tier; $C \le 0 \implies$ `fast` tier.
+- $U \ge 3 \implies$ `high` reasoning effort; $0 \le U < 3 \implies$ `medium` effort; $U < 0 \implies$ `low` effort.
+**And** executes in < 2ms with zero external network requests, zero models, and zero API keys.
 
-### R2: Concrete Model Mapping Matrix & Custom Configuration
-**Given** the resolved model tier and selected agent (`claude`, `agy`, `codex`)
-**When** preparing launch arguments
-**Then** Sprout maps to the concrete provider model:
-- `claude`: `frontier`/`balanced` -> `claude-3-7-sonnet-latest`, `fast` -> `claude-3-5-haiku-latest`
-- `agy`: `frontier` -> `pro`, `balanced`/`fast` -> `flash`
-- `codex`: `frontier` -> `o3-mini`, `balanced` -> `gpt-4o`, `fast` -> `gpt-4o-mini`
-**And** allows customization via `<git-common-dir>/sprout/config.toml` under `[models]`.
-**And** honors explicit CLI overrides via `--model <custom-model>`.
+### R2: Quota & Headroom-First Smart Agent Routing
+**Given** multiple coding agents (`claude`, `agy`, `codex`)
+**When** resolving the target agent via `--agent auto`
+**Then** Sprout evaluates `agents_status.json`:
+- Excludes agents with active cooldowns (`cooldown_until > now`).
+- Excludes agents exceeding maximum concurrency in Herdr.
+- Computes remaining headroom percentage based on sliding window consumption (`tokens_consumed_window / window_limit_est`).
+- Selects the freshest candidate with highest available headroom.
 
-### R3: Herdr Model Propagation
-**Given** Sprout initializes a Herdr workspace and pane
-**When** executing `herdr agent start`
-**Then** it injects the resolved model parameter into the agent CLI invocation:
-- `claude`: `-- --model <model>`
-- `agy`: `-- --new-project --project <label> --model <model>`
-- `codex`: `-- --model <model>`.
+### R3: Concrete Model Mapping & Provider Flag Propagation
+**Given** the resolved model tier, reasoning effort, and selected agent
+**When** spawning the agent inside Herdr
+**Then** it translates into concrete provider flags:
+- `claude`: `--model claude-3-7-sonnet-latest` (frontier/balanced) or `claude-3-5-haiku-latest` (fast)
+- `agy`: `--model pro` (frontier) or `--model flash` (balanced/fast) alongside `--new-project --project <label>`
+- `codex`: `--model o3-mini` (frontier), `gpt-4o` (balanced), or `gpt-4o-mini` (fast).
 
-### R4: Warm-Start Session Recycling (`sprout session recycle`)
-**Given** an active agent session is saturated or transitioning between major implementation phases
-**When** the developer runs `sprout session recycle` inside the worktree (or with `--pane <pane_id>`)
-**Then** Sprout:
-1. Generates an immutable snapshot at `.sprout/handoff.md` with current Git diff stats, modified files, Jira context, and resumption tasks.
-2. Gracefully interrupts the bloated agent process in Herdr (`C-c`).
-3. Re-spawns a fresh agent session in the same pane with a clean context window.
-4. Automatically injects the warm-start prompt directing the agent to read `.sprout/handoff.md` and resume without context bloat.
+### R4: Reliable Clean Shell Process Termination
+**Given** interactive agents (e.g. `agy`, `claude`) intercept single `C-c` signals
+**When** recycling or terminating an agent in a Herdr pane
+**Then** Sprout sends `esc` + double `C-c`, inspects `herdr pane process-info`, and if necessary applies `SIGTERM` / `SIGKILL` directly to the foreground process PID until only the base shell (`shell_pid`) remains
+**And** guarantees `herdr agent start` will never fail with `agent_pane_busy`.
 
-### R5: Session Status & Telemetry Inspection (`sprout session status`)
-**Given** a developer wants to inspect the state of active sessions and handoff status
-**When** running `sprout session status`
-**Then** Sprout prints the active agent, pane, working directory, resolved model tier, and last handoff timestamp.
+### R5: Autonomous Non-LLM Background Watcher Daemon (`sprout session watch`)
+**Given** long pair programming sessions may cause context saturation without manual developer intervention
+**When** running `sprout session watch --daemon` (or automatically spawned by `sprout <type>`)
+**Then** the background process wakes periodically (every 30s) without involving any LLMs:
+- Measures transcript file sizes on disk (`transcript.jsonl`) and Herdr scrollback lines.
+- If threshold is exceeded (>120KB or >2000 lines), automatically snapshots state to `.sprout/handoff.md`, interrupts the bloated agent, re-spawns a fresh session, and injects the warm-start prompt.
+- Prevents rapid re-triggering using a 300s anti-loop cooldown per pane.
 
 ---
 

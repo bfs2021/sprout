@@ -1,0 +1,4 @@
+.sprout/
+.jdw/
+*.log
+*.pid

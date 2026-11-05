@@ -11,16 +11,17 @@ usage() {
   cat >&2 <<'HELP'
 Usage:
   sprout init
-  sprout session <status|recycle> [options]
+  sprout session <status|recycle|watch> [options]
   sprout agent <status|cooldown|reset> [options]
   sprout <type> (--issue <ISSUE-KEY> | --feature <name>) [options]
 
-Session Management & Handoff:
-  sprout session status                        View active agent session, pane, and context metrics
-  sprout session recycle                       Snapshot state to .sprout/handoff.md and restart fresh agent session
+Session Management & Autonomous Watcher:
+  sprout session status                        View active agent session, pane, context metrics, and watcher state
+  sprout session recycle [options]             Snapshot state to .sprout/handoff.md and restart fresh agent session
+  sprout session watch [options]               Run non-LLM autonomous context watcher (--daemon, --status, --stop)
 
 Agent Management:
-  sprout agent status                          View agent telemetry, cooldowns, and live Herdr sessions
+  sprout agent status                          View agent telemetry, cooldowns, 5h-window headroom, and live sessions
   sprout agent cooldown <name> [--for <dur>]   Place agent in cooldown (e.g. --for 2h, --until 18:30)
   sprout agent reset [name]                    Clear cooldown for specified agent (or all agents)
 
@@ -31,8 +32,9 @@ Options:
   --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature; lowercased with hyphens converted to underscores
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
-  -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex). Default: auto
+  -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex). Default: auto (headroom-first router)
   --model MODEL        Explicit model override (e.g. claude-3-7-sonnet-latest, pro, flash, o3-mini)
+  --effort LEVEL       Explicit reasoning effort override (high, medium, low)
   -m, --method NAME    Workflow/methodology template (bmad, scpe, none). Default: bmad
   --no-agent           Create worktree and Herdr workspace without launching an agent
   --no-herdr           Create worktree only without creating a Herdr workspace
@@ -46,9 +48,9 @@ Examples:
   sprout init
   sprout session status
   sprout session recycle
+  sprout session watch --daemon
   sprout agent status
   sprout agent cooldown claude --for 2h --reason "5h token window reached"
-  sprout agent reset claude
   sprout fix --issue FT-123
   sprout feat --issue FT-456 --agent agy --method scpe
   sprout docs --feature guide-refresh --agent codex
@@ -68,7 +70,9 @@ manage_session_subcommand() {
   local subcmd=${1:-status}
   shift || true
 
-  local pane_override="" agent_override=""
+  local pane_override="" agent_override="" daemon_flag=false stop_flag=false status_flag=false
+  local interval_sec=30 threshold_kb=120
+
   while (($#)); do
     case "$1" in
       --pane)
@@ -79,15 +83,41 @@ manage_session_subcommand() {
         agent_override="$2"
         shift 2
         ;;
+      --daemon)
+        daemon_flag=true
+        shift
+        ;;
+      --stop)
+        stop_flag=true
+        shift
+        ;;
+      --status)
+        status_flag=true
+        shift
+        ;;
+      --interval)
+        interval_sec="$2"
+        shift 2
+        ;;
+      --threshold)
+        threshold_kb="$2"
+        shift 2
+        ;;
       -h|--help)
         cat >&2 <<'HELPSESS'
 Usage:
   sprout session status [options]
   sprout session recycle [options]
+  sprout session watch [options]
 
 Options:
   --pane PANE_ID       Target specific Herdr pane ID
   --agent AGENT_NAME   Target specific Herdr agent name
+  --daemon             Run watcher as a detached background daemon
+  --stop               Stop the running background watcher daemon
+  --status             Check background watcher daemon status
+  --interval SECONDS   Watcher poll interval in seconds (default: 30)
+  --threshold KB       Context size threshold in KB to trigger handoff (default: 120)
   -h, --help           Show this help
 HELPSESS
         exit 0
@@ -111,8 +141,8 @@ HELPSESS
     exit 1
   fi
 
-  python3 - "$worktree_root" "$subcmd" "$pane_override" "$agent_override" <<'PYSESSION'
-import sys, json, os, subprocess, time
+  python3 - "$worktree_root" "$subcmd" "$pane_override" "$agent_override" "$daemon_flag" "$stop_flag" "$status_flag" "$interval_sec" "$threshold_kb" "$config_dir" <<'PYSESSION'
+import sys, json, os, subprocess, time, signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -120,43 +150,142 @@ worktree_root = Path(sys.argv[1]).resolve()
 subcmd = sys.argv[2]
 pane_override = sys.argv[3].strip()
 agent_override = sys.argv[4].strip()
+daemon_flag = sys.argv[5].lower() == "true"
+stop_flag = sys.argv[6].lower() == "true"
+status_flag = sys.argv[7].lower() == "true"
+interval_sec = int(sys.argv[8])
+threshold_kb = int(sys.argv[9])
+config_dir = Path(sys.argv[10]).resolve()
 
-# Query Herdr agents
-agent_info = None
-try:
-    out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
-    agents = json.loads(out).get("result", {}).get("agents", [])
-    for ag in agents:
-        if pane_override and ag.get("pane_id") == pane_override:
-            agent_info = ag
-            break
-        if agent_override and (ag.get("name") == agent_override or ag.get("agent") == agent_override):
-            agent_info = ag
-            break
-        ag_cwd = Path(ag.get("cwd", "")).resolve()
-        fg_cwd = Path(ag.get("foreground_cwd", "")).resolve()
-        if ag_cwd == worktree_root or fg_cwd == worktree_root:
-            agent_info = ag
-            break
-except Exception:
-    pass
+pid_file = config_dir / "watch.pid"
+log_file = config_dir / "watch.log"
+
+def get_watcher_pid():
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return pid
+        except Exception:
+            try:
+                pid_file.unlink()
+            except Exception:
+                pass
+    return None
+
+def find_agent_for_worktree(target_root, pane_ovr="", agent_ovr=""):
+    try:
+        out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+        agents = json.loads(out).get("result", {}).get("agents", [])
+        for ag in agents:
+            if pane_ovr and ag.get("pane_id") == pane_ovr:
+                return ag
+            if agent_ovr and (ag.get("name") == agent_ovr or ag.get("agent") == agent_ovr):
+                return ag
+            ag_cwd = Path(ag.get("cwd", "")).resolve()
+            fg_cwd = Path(ag.get("foreground_cwd", "")).resolve()
+            if ag_cwd == target_root or fg_cwd == target_root:
+                return ag
+    except Exception:
+        pass
+    return None
+
+def estimate_context_metrics(ag_info):
+    if not ag_info:
+        return 0, 0, None
+    pane_id = ag_info.get("pane_id", "")
+    agent_kind = ag_info.get("agent", "")
+    sess_id = ag_info.get("agent_session", {}).get("value", "")
+
+    size_bytes = 0
+    transcript_path = None
+    if agent_kind == "agy" and sess_id:
+        p = Path.home() / ".gemini" / "antigravity-cli" / "brain" / sess_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if p.exists():
+            transcript_path = p
+            size_bytes = p.stat().st_size
+
+    scroll_lines = 0
+    if pane_id:
+        try:
+            out = subprocess.check_output(["herdr", "pane", "get", pane_id], stderr=subprocess.DEVNULL)
+            p_data = json.loads(out).get("result", {}).get("pane", {})
+            scroll_lines = p_data.get("scroll", {}).get("max_offset_from_bottom", 0)
+        except Exception:
+            pass
+
+    size_kb = size_bytes / 1024.0 if size_bytes > 0 else (scroll_lines * 70.0 / 1024.0)
+    return size_kb, scroll_lines, transcript_path
+
+def terminate_agent_in_pane(pane_id, timeout=3.5):
+    try:
+        subprocess.run(["herdr", "pane", "send-keys", pane_id, "esc", "C-c", "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    start_t = time.time()
+    while time.time() - start_t < timeout:
+        try:
+            out = subprocess.check_output(["herdr", "pane", "process-info", "--pane", pane_id], stderr=subprocess.DEVNULL)
+            p_info = json.loads(out).get("result", {}).get("process_info", {})
+            shell_pid = p_info.get("shell_pid")
+            fg_procs = p_info.get("foreground_processes", [])
+            non_shell = [p for p in fg_procs if p.get("pid") != shell_pid and p.get("name") not in ("bash", "zsh", "sh", "fish")]
+            if not non_shell:
+                return True
+            if time.time() - start_t >= 1.0:
+                for p in non_shell:
+                    target_pid = p.get("pid")
+                    if target_pid:
+                        try:
+                            os.kill(target_pid, signal.SIGTERM)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+    try:
+        out = subprocess.check_output(["herdr", "pane", "process-info", "--pane", pane_id], stderr=subprocess.DEVNULL)
+        p_info = json.loads(out).get("result", {}).get("process_info", {})
+        shell_pid = p_info.get("shell_pid")
+        for p in p_info.get("foreground_processes", []):
+            if p.get("pid") != shell_pid and p.get("name") not in ("bash", "zsh", "sh", "fish"):
+                try:
+                    os.kill(p["pid"], signal.SIGKILL)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    time.sleep(0.5)
+    return True
 
 sprout_dir = worktree_root / ".sprout"
 handoff_file = sprout_dir / "handoff.md"
 
 if subcmd == "status":
-    print(f"\n🌱 Sprout Session Lifecycle Status")
+    agent_info = find_agent_for_worktree(worktree_root, pane_override, agent_override)
+    w_pid = get_watcher_pid()
+
+    print(f"\n🌱 Sprout Session Lifecycle & Autonomous Watcher Status")
     print(f"Worktree: {worktree_root}\n")
+
+    watcher_desc = f"ACTIVE (PID: {w_pid})" if w_pid else "INACTIVE (Start with: sprout session watch --daemon)"
+    print(f"Autonomous Sentinel Watcher: {watcher_desc}")
+
     if agent_info:
         name = agent_info.get("name") or agent_info.get("agent", "unknown")
         kind = agent_info.get("agent", "unknown")
         pane_id = agent_info.get("pane_id", "unknown")
         status = agent_info.get("agent_status", "unknown").upper()
         sess_val = agent_info.get("agent_session", {}).get("value", "—")
+        size_kb, scroll_lines, _ = estimate_context_metrics(agent_info)
+
         print(f"Herdr Agent:       {name} (kind: {kind})")
         print(f"Herdr Pane:        {pane_id}")
         print(f"Lifecycle Status:  {status}")
-        print(f"Session Identifier:{sess_val}")
+        print(f"Session ID:        {sess_val}")
+        print(f"Context Metrics:   ~{size_kb:.1f} KB (Scrollback: {scroll_lines} lines)")
     else:
         print("Herdr Agent:       No active agent currently mapped to this worktree in Herdr.")
 
@@ -168,6 +297,7 @@ if subcmd == "status":
     print("")
 
 elif subcmd == "recycle":
+    agent_info = find_agent_for_worktree(worktree_root, pane_override, agent_override)
     if not agent_info:
         print(f"Error: No active Herdr agent session detected for worktree {worktree_root}.\nProvide --pane <pane_id> or --agent <agent_name> if running from outside the worktree.", file=sys.stderr)
         sys.exit(1)
@@ -240,16 +370,8 @@ elif subcmd == "recycle":
 
     # 3. Gracefully stop previous agent process
     print("✓ Terminating bloated agent session in Herdr...")
-    try:
-        subprocess.run(["herdr", "agent", "send-keys", agent_name, "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-    try:
-        subprocess.run(["herdr", "pane", "send-keys", pane_id, "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-    time.sleep(1.0)
+    terminate_agent_in_pane(pane_id)
+    time.sleep(0.5)
 
     # 4. Spawn clean agent
     print(f"✓ Starting fresh {agent_kind} session in pane {pane_id} with pristine context...")
@@ -258,9 +380,12 @@ elif subcmd == "recycle":
         extra_args = ["--", "--new-project", "--project", worktree_root.name]
 
     launch_cmd = ["herdr", "agent", "start", agent_name, "--kind", agent_kind, "--pane", pane_id] + extra_args
-    subprocess.run(launch_cmd, capture_output=True, text=True)
+    res = subprocess.run(launch_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        time.sleep(1.0)
+        res = subprocess.run(launch_cmd, capture_output=True, text=True)
 
-    time.sleep(1.0)
+    time.sleep(1.5)
 
     # 5. Send warm-start prompt
     handoff_prompt = "BMad/Sprout: Sessão reiniciada com contexto limpo. Leia o snapshot de handoff em .sprout/handoff.md e continue o trabalho a partir do ponto atual."
@@ -272,8 +397,209 @@ elif subcmd == "recycle":
 
     print("\n✨ Session recycled successfully! Context window has been reset with full memory preserved.\n")
 
+elif subcmd == "watch":
+    if stop_flag:
+        w_pid = get_watcher_pid()
+        if w_pid:
+            try:
+                os.kill(w_pid, signal.SIGTERM)
+                print(f"✓ Stopped Sprout Session Watcher daemon (PID: {w_pid}).")
+            except Exception as e:
+                print(f"Error stopping watcher PID {w_pid}: {e}", file=sys.stderr)
+            if pid_file.exists():
+                pid_file.unlink()
+        else:
+            print("No active Sprout Session Watcher daemon detected.")
+        sys.exit(0)
+
+    if status_flag:
+        w_pid = get_watcher_pid()
+        if w_pid:
+            print(f"🌱 Sprout Session Watcher is ACTIVE (PID: {w_pid})")
+            print(f"Log: {log_file}")
+        else:
+            print("🌱 Sprout Session Watcher is INACTIVE")
+        sys.exit(0)
+
+    if daemon_flag:
+        w_pid = get_watcher_pid()
+        if w_pid:
+            print(f"Sprout Session Watcher is already running (PID: {w_pid}).")
+            sys.exit(0)
+
+        config_dir.mkdir(parents=True, exist_ok=True)
+        # Fork daemon subprocess
+        daemon_cmd = [
+            sys.executable, "-c",
+            """
+import sys, os, subprocess, time, json
+from datetime import datetime
+from pathlib import Path
+
+interval = int(sys.argv[1])
+threshold_kb = float(sys.argv[2])
+config_dir = Path(sys.argv[3])
+pid_file = config_dir / "watch.pid"
+
+def log_msg(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+def terminate_pane(pane_id, timeout=3.5):
+    try:
+        subprocess.run(["herdr", "pane", "send-keys", pane_id, "esc", "C-c", "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    start_t = time.time()
+    while time.time() - start_t < timeout:
+        try:
+            out = subprocess.check_output(["herdr", "pane", "process-info", "--pane", pane_id], stderr=subprocess.DEVNULL)
+            p_info = json.loads(out).get("result", {}).get("process_info", {})
+            shell_pid = p_info.get("shell_pid")
+            fg_procs = p_info.get("foreground_processes", [])
+            non_shell = [p for p in fg_procs if p.get("pid") != shell_pid and p.get("name") not in ("bash", "zsh", "sh", "fish")]
+            if not non_shell:
+                return True
+            if time.time() - start_t >= 1.0:
+                for p in non_shell:
+                    target_pid = p.get("pid")
+                    if target_pid:
+                        try:
+                            os.kill(target_pid, signal.SIGTERM)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        time.sleep(0.3)
+    try:
+        out = subprocess.check_output(["herdr", "pane", "process-info", "--pane", pane_id], stderr=subprocess.DEVNULL)
+        p_info = json.loads(out).get("result", {}).get("process_info", {})
+        shell_pid = p_info.get("shell_pid")
+        for p in p_info.get("foreground_processes", []):
+            if p.get("pid") != shell_pid and p.get("name") not in ("bash", "zsh", "sh", "fish"):
+                try:
+                    os.kill(p["pid"], signal.SIGKILL)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    time.sleep(0.5)
+    return True
+
+with open(pid_file, "w") as f:
+    f.write(str(os.getpid()))
+
+log_msg(f"Sprout Sentinel Watcher started. Interval: {interval}s, Threshold: {threshold_kb}KB")
+
+cooldowns = {}
+
+while True:
+    try:
+        out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+        agents = json.loads(out).get("result", {}).get("agents", [])
+        now_ts = time.time()
+        for ag in agents:
+            pane_id = ag.get("pane_id")
+            cwd = ag.get("cwd") or ag.get("foreground_cwd")
+            agent_kind = ag.get("agent")
+            agent_name = ag.get("name") or f"agent-{Path(cwd).name if cwd else 'session'}"
+            sess_id = ag.get("agent_session", {}).get("value")
+
+            if not cwd or not Path(cwd).is_dir():
+                continue
+            if str(cwd).endswith("/sprout"):
+                continue
+
+            # Anti-loop cooldown per pane (5 min minimum between auto-recycles)
+            if pane_id in cooldowns and (now_ts - cooldowns[pane_id] < 300):
+                continue
+
+            size_bytes = 0
+            if agent_kind == "agy" and sess_id:
+                p = Path.home() / ".gemini" / "antigravity-cli" / "brain" / sess_id / ".system_generated" / "logs" / "transcript.jsonl"
+                if p.exists():
+                    size_bytes = p.stat().st_size
+            
+            scroll_lines = 0
+            if pane_id:
+                try:
+                    p_out = subprocess.check_output(["herdr", "pane", "get", pane_id], stderr=subprocess.DEVNULL)
+                    p_data = json.loads(p_out).get("result", {}).get("pane", {})
+                    scroll_lines = p_data.get("scroll", {}).get("max_offset_from_bottom", 0)
+                except Exception:
+                    pass
+
+            size_kb = (size_bytes / 1024.0) if size_bytes > 0 else (scroll_lines * 70.0 / 1024.0)
+
+            if size_kb >= threshold_kb or scroll_lines >= 2000:
+                log_msg(f"Triggering auto-recycle for {agent_name} in {cwd} (Size: {size_kb:.1f}KB, Scroll: {scroll_lines} lines)")
+                cooldowns[pane_id] = now_ts
+                
+                # Notify pane
+                try:
+                    subprocess.run(["herdr", "pane", "send-text", pane_id, f"\\n\\n[Sprout Monitor] ⚠️ Context threshold exceeded ({size_kb:.1f}KB). Recycling session...\\n\\n"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+                # Snapshot state
+                sprout_dir = Path(cwd) / ".sprout"
+                sprout_dir.mkdir(parents=True, exist_ok=True)
+                handoff_file = sprout_dir / "handoff.md"
+                git_status = subprocess.getoutput(f"git -C '{cwd}' status --short 2>/dev/null")
+                git_diff = subprocess.getoutput(f"git -C '{cwd}' diff --stat 2>/dev/null")
+                recent = subprocess.getoutput(f"git -C '{cwd}' log -n 3 --oneline 2>/dev/null")
+                
+                handoff_md = f"# 🔄 Autonomous Session Handoff\\n\\n- **Trigger:** Context threshold exceeded ({size_kb:.1f}KB)\\n- **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n- **Agent:** {agent_name} ({agent_kind})\\n\\n## Changed Files\\n```\\n{git_status}\\n```\\n\\n## Diff Stat\\n```\\n{git_diff}\\n```\\n"
+                with open(handoff_file, "w", encoding="utf-8") as hf:
+                    hf.write(handoff_md)
+
+                # Terminate agent reliably until only shell remains
+                terminate_pane(pane_id)
+                time.sleep(0.5)
+
+                # Respawn
+                extra = ["--", "--new-project", "--project", Path(cwd).name] if agent_kind == "agy" else []
+                launch_cmd = ["herdr", "agent", "start", agent_name, "--kind", agent_kind, "--pane", pane_id] + extra
+                res = subprocess.run(launch_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1.5)
+                prompt = "BMad/Sprout: Sessão reiniciada automaticamente com contexto limpo pelo monitor autônomo. Leia .sprout/handoff.md e continue o trabalho."
+                subprocess.run(["herdr", "agent", "prompt", agent_name, prompt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log_msg(f"Auto-recycle complete for {agent_name}.")
+
+    except Exception as e:
+        log_msg(f"Watcher loop error: {e}")
+    time.sleep(interval)
+""",
+            str(interval_sec), str(threshold_kb), str(config_dir)
+        ]
+        with open(log_file, "a", encoding="utf-8") as log_stream:
+            p = subprocess.Popen(daemon_cmd, stdout=log_stream, stderr=log_stream, start_new_session=True)
+            print(f"✓ Started Sprout Autonomous Session Watcher daemon (PID: {p.pid}).")
+            print(f"Interval: {interval_sec}s | Threshold: {threshold_kb}KB | Log: {log_file}")
+        sys.exit(0)
+
+    # Foreground live watch mode
+    print(f"\n🌱 Sprout Session Watcher (Live Foreground Mode)")
+    print(f"Polling Herdr agents every {interval_sec}s (Threshold: {threshold_kb}KB)... Press Ctrl+C to exit.\n")
+    try:
+        while True:
+            out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+            agents = json.loads(out).get("result", {}).get("agents", [])
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(f"[{ts}] Active agents: {len(agents)}")
+            for ag in agents:
+                p_id = ag.get("pane_id")
+                a_name = ag.get("name") or ag.get("agent")
+                cwd = ag.get("cwd") or ag.get("foreground_cwd")
+                size_kb, scroll_lines, _ = estimate_context_metrics(ag)
+                status_note = f"⚠️ EXCEEDED ({size_kb:.1f}KB)" if size_kb >= threshold_kb or scroll_lines >= 2000 else f"OK ({size_kb:.1f}KB, {scroll_lines} lines)"
+                print(f"  └─ Pane {p_id} ({a_name}) in {cwd}: {status_note}")
+            time.sleep(interval_sec)
+    except KeyboardInterrupt:
+        print("\nWatcher stopped.")
+
 else:
-    print(f"Unknown session subcommand: {subcmd}. Available: status, recycle", file=sys.stderr)
+    print(f"Unknown session subcommand: {subcmd}. Available: status, recycle, watch", file=sys.stderr)
     sys.exit(1)
 PYSESSION
 }
@@ -309,9 +635,9 @@ args = sys.argv[3:]
 
 default_state = {
     "agents": {
-        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "reason": ""},
-        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3, "last_used": None, "reason": ""},
-        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "reason": ""}
+        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "tokens_consumed_window": 0, "window_limit_est": 200000, "reason": ""},
+        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3, "last_used": None, "tokens_consumed_window": 0, "window_limit_est": 300000, "reason": ""},
+        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2, "last_used": None, "tokens_consumed_window": 0, "window_limit_est": 150000, "reason": ""}
     }
 }
 
@@ -368,8 +694,8 @@ if subcmd == "status":
 
     print("\n🌱 Sprout Smart Agent Telemetry & Status")
     print(f"Store: {status_file}\n")
-    print(f"{'AGENT':<10} {'STATUS':<12} {'ACTIVE SESSIONS':<18} {'COOLDOWN UNTIL':<25} {'PRIORITY':<8}")
-    print("-" * 75)
+    print(f"{'AGENT':<10} {'STATUS':<12} {'HEADROOM':<12} {'ACTIVE SESSIONS':<18} {'COOLDOWN UNTIL':<25} {'PRIORITY':<8}")
+    print("-" * 88)
     for name, info in sorted(agents.items(), key=lambda x: x[1].get("priority", 99)):
         cd = info.get("cooldown_until") or "—"
         if cd != "—":
@@ -380,8 +706,11 @@ if subcmd == "status":
                 pass
         st = info.get("status", "available").upper()
         active = f"{herdr_counts.get(name, 0)} (max {info.get('max_concurrency', 2)})"
+        consumed = info.get("tokens_consumed_window", 0)
+        limit = info.get("window_limit_est", 200000)
+        headroom_pct = int(max(0.0, (limit - consumed) / limit) * 100)
         pri = str(info.get("priority", 1))
-        print(f"{name:<10} {st:<12} {active:<18} {cd:<25} {pri:<8}")
+        print(f"{name:<10} {st:<12} {f'{headroom_pct}% free':<12} {active:<18} {cd:<25} {pri:<8}")
         if info.get("reason"):
             print(f"  └─ Reason: {info.get('reason')}")
     print("")
@@ -392,7 +721,7 @@ elif subcmd == "cooldown":
         sys.exit(1)
     agent_name = args[0].lower()
     if agent_name not in agents:
-        agents[agent_name] = {"priority": 99, "status": "available", "cooldown_until": None, "max_concurrency": 2}
+        agents[agent_name] = {"priority": 99, "status": "available", "cooldown_until": None, "max_concurrency": 2, "tokens_consumed_window": 0, "window_limit_est": 200000}
     
     duration = "2h"
     until_val = None
@@ -629,13 +958,14 @@ base_override=
 dest_override=
 agent_opt=
 model_opt=
+effort_opt=
 method_opt=
 no_agent=false
 no_herdr=false
 
 while (($#)); do
   case "$1" in
-    --issue|--feature|--slug|--base|--dest|-a|--agent|--model|-m|--method)
+    --issue|--feature|--slug|--base|--dest|-a|--agent|--model|--effort|-m|--method)
       (($# >= 2)) || usage
       option=$1
       value=$2
@@ -648,6 +978,7 @@ while (($#)); do
         --dest) [[ -z "$dest_override" ]] || usage; dest_override=$value ;;
         -a|--agent) [[ -z "$agent_opt" ]] || usage; agent_opt=$value ;;
         --model) [[ -z "$model_opt" ]] || usage; model_opt=$value ;;
+        --effort) [[ -z "$effort_opt" ]] || usage; effort_opt=$value ;;
         -m|--method) [[ -z "$method_opt" ]] || usage; method_opt=$value ;;
       esac
       ;;
@@ -707,152 +1038,15 @@ PYPROJECT
   if [[ ${#project_values[@]} -ge 4 ]]; then default_method=$(printf '%s' "${project_values[3]}" | base64 --decode); fi
 fi
 
-agent=${agent_opt:-${default_agent:-auto}}
-method=${method_opt:-${default_method:-bmad}}
+summary=
+issue_json=
+jira_host=
+response_file=
+issue_type=""
+priority=""
+desc_plain=""
 
-# Execute Smart Agent Router if agent is set to 'auto'
-if [[ "$agent" == "auto" ]]; then
-  status_file="$common_dir/sprout/agents_status.json"
-  router_output=$(python3 - "$status_file" <<'PYROUTE'
-import sys, json, os, subprocess
-from datetime import datetime, timezone
-from pathlib import Path
-
-status_file = Path(sys.argv[1])
-default_state = {
-    "agents": {
-        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2},
-        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3},
-        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2}
-    }
-}
-data = default_state
-if status_file.exists():
-    try:
-        with open(status_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = default_state
-
-agents = data.setdefault("agents", default_state["agents"])
-now = datetime.now().astimezone()
-
-herdr_counts = {}
-try:
-    out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
-    h_data = json.loads(out)
-    for ag in h_data.get("result", {}).get("agents", []):
-        k = ag.get("agent")
-        if k:
-            herdr_counts[k] = herdr_counts.get(k, 0) + 1
-except Exception:
-    pass
-
-available_candidates = []
-cooldown_notes = []
-
-for name, info in agents.items():
-    cd = info.get("cooldown_until")
-    is_cd = False
-    if cd:
-        try:
-            cd_dt = datetime.fromisoformat(cd)
-            if cd_dt > now:
-                is_cd = True
-                cooldown_notes.append(f"{name} in cooldown until {cd_dt.strftime('%H:%M')}")
-            else:
-                info["status"] = "available"
-                info["cooldown_until"] = None
-        except Exception:
-            pass
-    active = herdr_counts.get(name, 0)
-    priority = info.get("priority", 99)
-    if not is_cd:
-        available_candidates.append((active, priority, name))
-
-selected_agent = None
-rationale = ""
-
-if available_candidates:
-    available_candidates.sort() # lowest active sessions first, then highest priority
-    selected_agent = available_candidates[0][2]
-    active_cnt = available_candidates[0][0]
-    cd_text = f"; {', '.join(cooldown_notes)}" if cooldown_notes else ""
-    rationale = f"lowest active load: {active_cnt} sessions{cd_text}"
-else:
-    sorted_all = sorted(agents.items(), key=lambda x: x[1].get("priority", 99))
-    selected_agent = sorted_all[0][0]
-    rationale = "Warning: All agents in cooldown, selecting fallback by priority"
-
-if selected_agent in agents:
-    agents[selected_agent]["last_used"] = now.isoformat()
-    try:
-        status_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(status_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.chmod(status_file, 0o600)
-    except Exception:
-        pass
-
-print(f"{selected_agent}\t{rationale}")
-PYROUTE
-  )
-  agent=$(awk -F'\t' '{print $1}' <<< "$router_output")
-  router_rationale=$(awk -F'\t' '{print $2}' <<< "$router_output")
-  printf '\n🌱 [Smart Router] Selected agent: %s (%s)\n' "$agent" "$router_rationale"
-fi
-
-# Execute Task-Type Model Router
-model_output=$(python3 - "$type" "$agent" "${model_opt:-}" "$project_config" <<'PYMODEL'
-import sys, tomllib
-from pathlib import Path
-
-task_type = sys.argv[1].lower()
-agent_name = sys.argv[2].lower()
-cli_model = sys.argv[3].strip()
-config_file = Path(sys.argv[4])
-
-if cli_model:
-    print(f"{cli_model}\texplicit\texplicit CLI override")
-    sys.exit(0)
-
-# Default model tiering
-frontier_types = {"feat", "fix", "refactor", "perf", "spike"}
-balanced_types = {"test", "build"}
-fast_types = {"doc", "docs", "chore", "style", "ci", "revert"}
-
-tier = "frontier" if task_type in frontier_types else ("balanced" if task_type in balanced_types else "fast")
-
-default_maps = {
-    "claude": {"frontier": "claude-3-7-sonnet-latest", "balanced": "claude-3-7-sonnet-latest", "fast": "claude-3-5-haiku-latest"},
-    "agy": {"frontier": "pro", "balanced": "flash", "fast": "flash"},
-    "codex": {"frontier": "o3-mini", "balanced": "gpt-4o", "fast": "gpt-4o-mini"}
-}
-
-model_val = None
-if config_file.exists():
-    try:
-        with open(config_file, "rb") as f:
-            cfg = tomllib.load(f).get("models", {})
-            tier_override = cfg.get("tier_map", {}).get(task_type)
-            if tier_override:
-                tier = tier_override
-            agent_models = cfg.get("agents", {}).get(agent_name, {})
-            model_val = agent_models.get(tier)
-    except Exception:
-        pass
-
-if not model_val:
-    model_val = default_maps.get(agent_name, {}).get(tier, "")
-
-print(f"{model_val}\t{tier}\ttask type '{task_type}'")
-PYMODEL
-)
-model_name=$(awk -F'\t' '{print $1}' <<< "$model_output")
-model_tier=$(awk -F'\t' '{print $2}' <<< "$model_output")
-model_rationale=$(awk -F'\t' '{print $3}' <<< "$model_output")
-printf '🌱 [Model Router] Tier: %s -> Model: %s (%s for %s)\n' "$model_tier" "$model_name" "$model_rationale" "$agent"
-
+# Fetch Jira details if --issue was provided so the Semantic Complexity Engine can read it
 JIRA_BASE_URL=${JIRA_BASE_URL:-}
 JIRA_EMAIL=${JIRA_EMAIL:-}
 JIRA_API_TOKEN=${JIRA_API_TOKEN:-}
@@ -875,11 +1069,6 @@ PYAUTH
     fi
   done
 fi
-
-summary=
-issue_json=
-jira_host=
-response_file=
 
 if [[ -n "$issue" ]]; then
   command -v jq >/dev/null || { printf 'jq is required when using --issue.\n' >&2; exit 1; }
@@ -915,13 +1104,6 @@ if [[ -n "$issue" ]]; then
   fi
   if [[ "$http_status" != "200" ]]; then
     printf 'Jira returned HTTP %s for issue %s.\n' "$http_status" "$issue" >&2
-    if [[ "$http_status" == "401" ]]; then
-      printf 'Check the Atlassian account email, token validity, and that the token has an issue-read scope.\n' >&2
-    elif [[ "$http_status" == "403" ]]; then
-      printf 'The token is recognized but lacks an issue-read scope or your account lacks Browse Projects permission.\n' >&2
-    elif [[ "$http_status" == "404" ]]; then
-      printf 'Check that the issue key exists, the token includes read:jira-work (or its granular read scope), and your account can browse the issue.\n' >&2
-    fi
     exit 1
   fi
   issue_json=$(<"$response_file")
@@ -929,6 +1111,9 @@ if [[ -n "$issue" ]]; then
     printf 'Jira issue %s did not return a summary.\n' "$issue" >&2
     exit 1
   }
+  issue_type=$(jq -r '.fields.issuetype.name // ""' <<<"$issue_json")
+  priority=$(jq -r '.fields.priority.name // ""' <<<"$issue_json")
+  
   feature=${feature:-$issue}
   feature=$(printf '%s' "$feature" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
   slug=${slug:-$issue}
@@ -937,8 +1122,234 @@ fi
 
 [[ -n "$feature" ]] || { printf 'Provide --issue or --feature.\n' >&2; usage; }
 slug=${slug:-$feature}
-[[ "$feature" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid feature name: %s\n' "$feature" >&2; exit 2; }
-[[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { printf 'Invalid branch slug: %s\n' "$slug" >&2; exit 2; }
+summary=${summary:-$feature}
+
+# 1. Run the Weighted Semantic Complexity Engine & Headroom-First Smart Router
+status_file="$common_dir/sprout/agents_status.json"
+routing_resolution=$(python3 - "$type" "$summary" "${desc_plain:-}" "${issue_type:-}" "${priority:-}" "$status_file" "${agent_opt:-${default_agent:-auto}}" "${model_opt:-}" "${effort_opt:-}" "$project_config" <<'PYENGINE'
+import sys, json, os, subprocess, tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+task_type = sys.argv[1].lower()
+summary = sys.argv[2]
+description = sys.argv[3]
+issue_type = sys.argv[4]
+priority = sys.argv[5]
+status_file = Path(sys.argv[6])
+cli_agent = sys.argv[7].strip()
+cli_model = sys.argv[8].strip()
+cli_effort = sys.argv[9].strip()
+config_file = Path(sys.argv[10])
+
+text = f"{task_type} {summary} {description}".lower()
+
+# Lexical signals for Complexity (C)
+high_complexity_terms = {
+    "concurrency": 4, "deadlock": 5, "race condition": 5, "memory leak": 5,
+    "mutex": 4, "transaction": 4, "cryptography": 4, "crypto": 3,
+    "jwt": 3, "distributed": 4, "migration": 3, "protocol": 3,
+    "ast": 4, "compiler": 4, "recursion": 3, "performance": 3,
+    "profiling": 3, "optimization": 3, "thread safe": 4, "lock": 3,
+    "deadlocks": 5, "bottleneck": 3, "leak": 4
+}
+low_complexity_terms = {
+    "readme": -3, "docs": -3, "documentation": -4, "typo": -4,
+    "css": -3, "color": -3, "padding": -3, "margin": -3,
+    "style": -3, "lint": -4, "format": -3, "changelog": -4,
+    "bump": -4, "version": -3, "comment": -3, "guide": -2
+}
+
+# Uncertainty/Risk terms (U) -> Reasoning Effort
+uncertainty_terms = {
+    "investigate": 4, "debug": 4, "intermittent": 4, "flaky": 4,
+    "unknown": 3, "root cause": 4, "audit": 3, "security": 4,
+    "vulnerability": 4, "why": 3, "reproduce": 3, "edge case": 3,
+    "race condition": 3, "memory leak": 3, "deadlock": 3
+}
+mechanical_terms = {
+    "add field": -3, "rename": -3, "update text": -3, "boilerplate": -3,
+    "crud": -2, "copy": -2, "template": -2, "scaffold": -2
+}
+
+score_c = 0
+signals_c = []
+if task_type in {"feat", "fix", "refactor", "perf", "spike"}:
+    score_c += 1
+elif task_type in {"doc", "docs", "chore", "style", "ci"}:
+    score_c -= 2
+
+for term, weight in high_complexity_terms.items():
+    if term in text:
+        score_c += weight
+        signals_c.append(f"'{term}' (+{weight})")
+
+for term, weight in low_complexity_terms.items():
+    if term in text:
+        score_c += weight
+        signals_c.append(f"'{term}' ({weight})")
+
+itype = issue_type.lower()
+if "bug" in itype:
+    score_c += 2
+    signals_c.append("Bug (+2)")
+elif "spike" in itype:
+    score_c += 3
+    signals_c.append("Spike (+3)")
+elif "doc" in itype:
+    score_c -= 3
+    signals_c.append("Doc (-3)")
+
+prio = priority.lower()
+if prio in {"critical", "highest"}:
+    score_c += 2
+    signals_c.append("Critical Priority (+2)")
+elif prio == "high":
+    score_c += 1
+    signals_c.append("High Priority (+1)")
+elif prio in {"low", "lowest"}:
+    score_c -= 1
+    signals_c.append("Low Priority (-1)")
+
+model_tier = "frontier" if score_c >= 4 else ("balanced" if score_c >= 1 else "fast")
+
+# Calculate Uncertainty (U)
+score_u = 0
+signals_u = []
+for term, weight in uncertainty_terms.items():
+    if term in text:
+        score_u += weight
+        signals_u.append(f"'{term}' (+{weight})")
+for term, weight in mechanical_terms.items():
+    if term in text:
+        score_u += weight
+        signals_u.append(f"'{term}' ({weight})")
+
+reasoning_effort = "high" if score_u >= 3 else ("medium" if score_u >= 0 else "low")
+if cli_effort:
+    reasoning_effort = cli_effort
+
+# Headroom & Status First Agent Selection
+default_state = {
+    "agents": {
+        "claude": {"priority": 1, "status": "available", "cooldown_until": None, "max_concurrency": 2, "tokens_consumed_window": 0, "window_limit_est": 200000},
+        "agy": {"priority": 2, "status": "available", "cooldown_until": None, "max_concurrency": 3, "tokens_consumed_window": 0, "window_limit_est": 300000},
+        "codex": {"priority": 3, "status": "available", "cooldown_until": None, "max_concurrency": 2, "tokens_consumed_window": 0, "window_limit_est": 150000}
+    }
+}
+data = default_state
+if status_file.exists():
+    try:
+        with open(status_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = default_state
+
+agents_data = data.setdefault("agents", default_state["agents"])
+now = datetime.now().astimezone()
+
+herdr_counts = {}
+try:
+    out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+    h_data = json.loads(out)
+    for ag in h_data.get("result", {}).get("agents", []):
+        k = ag.get("agent")
+        if k:
+            herdr_counts[k] = herdr_counts.get(k, 0) + 1
+except Exception:
+    pass
+
+selected_agent = cli_agent
+agent_rationale = ""
+
+if not cli_agent or cli_agent == "auto":
+    candidates = []
+    for name, info in agents_data.items():
+        cd = info.get("cooldown_until")
+        if cd:
+            try:
+                cd_dt = datetime.fromisoformat(cd)
+                if cd_dt > now:
+                    continue
+                else:
+                    info["status"] = "available"
+                    info["cooldown_until"] = None
+            except Exception:
+                pass
+        active = herdr_counts.get(name, 0)
+        max_c = info.get("max_concurrency", 2)
+        if active >= max_c:
+            continue
+        consumed = info.get("tokens_consumed_window", 0)
+        limit = info.get("window_limit_est", 200000)
+        headroom_ratio = max(0.0, (limit - consumed) / limit)
+        pri = info.get("priority", 99)
+        score = (headroom_ratio * 100) - (active * 25) - (pri * 2)
+        candidates.append((score, name, headroom_ratio, active))
+    
+    candidates.sort(reverse=True)
+    if candidates:
+        best = candidates[0]
+        selected_agent = best[1]
+        agent_rationale = f"Headroom: {int(best[2]*100)}% free, Active Herdr sessions: {best[3]}"
+    else:
+        selected_agent = "claude"
+        agent_rationale = "Fallback (all agents at capacity/cooldown)"
+else:
+    agent_rationale = f"Explicit override via -a {cli_agent}"
+
+# Update last_used
+if selected_agent in agents_data:
+    agents_data[selected_agent]["last_used"] = now.isoformat()
+    try:
+        status_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.chmod(status_file, 0o600)
+    except Exception:
+        pass
+
+# Resolve provider model
+default_models = {
+    "claude": {"frontier": "claude-3-7-sonnet-latest", "balanced": "claude-3-7-sonnet-latest", "fast": "claude-3-5-haiku-latest"},
+    "agy": {"frontier": "pro", "balanced": "flash", "fast": "flash"},
+    "codex": {"frontier": "o3-mini", "balanced": "gpt-4o", "fast": "gpt-4o-mini"}
+}
+resolved_model = cli_model if cli_model else default_models.get(selected_agent, {}).get(model_tier, "")
+
+c_sig_str = ", ".join(signals_c) if signals_c else "None"
+u_sig_str = ", ".join(signals_u) if signals_u else "Standard"
+
+# Output tab-separated results
+print(f"{selected_agent}\t{model_tier}\t{resolved_model}\t{reasoning_effort}\t{score_c}\t{c_sig_str}\t{score_u}\t{u_sig_str}\t{agent_rationale}")
+PYENGINE
+)
+
+agent=$(awk -F'\t' '{print $1}' <<< "$routing_resolution")
+model_tier=$(awk -F'\t' '{print $2}' <<< "$routing_resolution")
+model_name=$(awk -F'\t' '{print $3}' <<< "$routing_resolution")
+reasoning_effort=$(awk -F'\t' '{print $4}' <<< "$routing_resolution")
+score_c=$(awk -F'\t' '{print $5}' <<< "$routing_resolution")
+signals_c=$(awk -F'\t' '{print $6}' <<< "$routing_resolution")
+score_u=$(awk -F'\t' '{print $7}' <<< "$routing_resolution")
+signals_u=$(awk -F'\t' '{print $8}' <<< "$routing_resolution")
+agent_rationale=$(awk -F'\t' '{print $9}' <<< "$routing_resolution")
+
+printf '\n🌱 [Semantic Complexity Engine]\n'
+printf '   Complexity Score: %s (Signals: %s) -> Model Tier: %s\n' "$score_c" "$signals_c" "${model_tier^^}"
+printf '   Uncertainty Score: %s (Signals: %s) -> Reasoning Effort: %s\n' "$score_u" "$signals_u" "${reasoning_effort^^}"
+
+printf '\n🌱 [Smart Agent Router]\n'
+printf '   Selected Agent:  %s (%s)\n' "$agent" "$agent_rationale"
+printf '   Resolved Model:  %s\n' "$model_name"
+
+# Ensure the autonomous watcher daemon is running silently in background
+watcher_pid_file="$config_dir/watch.pid"
+if [[ ! -f "$watcher_pid_file" ]] || ! kill -0 "$(<"$watcher_pid_file")" 2>/dev/null; then
+  sprout session watch --daemon >/dev/null 2>&1 || true
+fi
+
+method=${method_opt:-${default_method:-bmad}}
 
 if [[ -n "$dest_override" ]]; then
   dest_parent=$(dirname "$dest_override")
@@ -1054,7 +1465,7 @@ if [[ "$no_herdr" != "true" ]] && command -v herdr >/dev/null 2>&1; then
     
     if [[ "$no_agent" != "true" && -n "$pane_id" ]]; then
       safe_agent_name=$(printf 'agent-%s' "$workspace_label" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | cut -c1-30)
-      printf 'Starting agent %s (kind: %s, model: %s) in Herdr pane %s...\n' "$safe_agent_name" "$agent" "$model_name" "$pane_id"
+      printf 'Starting agent %s (kind: %s, model: %s, effort: %s) in Herdr pane %s...\n' "$safe_agent_name" "$agent" "$model_name" "$reasoning_effort" "$pane_id"
       agent_extra_args=()
       if [[ "$agent" == "agy" ]]; then
         agent_extra_args=(-- --new-project --project "$workspace_label")
