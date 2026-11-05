@@ -81,6 +81,44 @@ name = "Finance Tool"
 github_repo = "org/finance-tool"
 
 [defaults]
-agent = "claude"     # Default agent: claude, agy, or codex
+agent = "auto"       # Default agent: auto (Smart Router), claude, agy, or codex
 method = "bmad"      # Default workflow: bmad, scpe, or none
+
+[models.tier_map]
+feat = "frontier"
+fix = "frontier"
+docs = "fast"
+chore = "fast"
+
+[models.agents.claude]
+frontier = "claude-3-7-sonnet-latest"
+fast = "claude-3-5-haiku-latest"
 ```
+
+---
+
+## Session Recycling & Context Compaction
+
+### The Context Window Problem
+During prolonged agent sessions, the cumulative transcript can easily exceed 80,000 tokens. This introduces:
+1. **Instruction Amnesia / Drift:** The agent begins to ignore rules defined in the initial briefing.
+2. **Execution Latency:** Every turn requires ingesting the bloated context window.
+3. **Escalating Costs:** Input token costs compound on every turn.
+
+### The Solution: Warm-Start Handoff
+Run inside the worktree at any time:
+
+```bash
+# Check current session context and Herdr pane status
+sprout session status
+
+# Snapshot state to .sprout/handoff.md and reboot agent with clean context
+sprout session recycle
+```
+
+When invoked:
+1. Sprout snapshots Git diff statistics, uncommitted files, recent commit history, and task requirements to `.sprout/handoff.md`.
+2. It sends an interrupt (`C-c`) to the active Herdr pane.
+3. It restarts the agent process cleanly with a pristine context window (~3k tokens).
+4. It submits an automatic warm-start prompt instructing the agent to resume from `.sprout/handoff.md`.
+

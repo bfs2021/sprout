@@ -85,14 +85,50 @@ sprout agent reset claude
 sprout agent reset          # Resets all agents
 ```
 
+### Task-Type Based Model Routing
+
+Sprout automatically matches the Conventional Commit task type to calibrated model tiers, preserving expensive reasoning tokens for deep architectural work and using fast models for minor edits:
+
+| Task Type | Model Tier | Claude Code | Antigravity (`agy`) | OpenAI Codex |
+| :--- | :--- | :--- | :--- | :--- |
+| `feat`, `fix`, `refactor`, `perf`, `spike` | **Frontier** (Deep Reasoning) | `claude-3-7-sonnet-latest` | `pro` | `o3-mini` |
+| `test`, `build` | **Balanced** (Implementation) | `claude-3-7-sonnet-latest` | `flash` | `gpt-4o` |
+| `docs`, `chore`, `style`, `ci`, `revert` | **Fast** (Cost-Effective) | `claude-3-5-haiku-latest` | `flash` | `gpt-4o-mini` |
+
+You can override the model explicitly at any time with `--model <name>`:
+```bash
+sprout feat --issue FT-123 --model claude-3-5-sonnet-20241022
+```
+
+### Context Compaction & Warm-Start Session Recycling
+
+When an agent session runs for extended periods, the context window can balloon (>80k tokens), causing attention drift, slow response times, and instruction amnesia. Sprout provides zero-amnesia **Session Recycling**:
+
+```bash
+# Check current session context and Herdr pane status
+sprout session status
+
+# Snapshot state to .sprout/handoff.md and restart agent with a fresh context window
+sprout session recycle
+```
+
+`sprout session recycle`:
+1. Snapshots git diffs, changed files, recent commits, and issue context into `.sprout/handoff.md`.
+2. Cleanly terminates the bloated agent process in Herdr.
+3. Relaunches a fresh session in the same pane with a clean context window (~3k tokens).
+4. Submits an automatic warm-start prompt instructing the agent to resume seamlessly from `.sprout/handoff.md`.
+
 ### Worktree Creation
 
 ```bash
-# Smart Router workflow (picks the least saturated agent not in cooldown)
+# Smart Router workflow (picks the least saturated agent and tier-matched model)
 sprout fix --issue FT-123
 
-# Explicitly override the agent selection
-sprout feat --issue FT-456 --agent agy
+# Fast-tier routing: automatically dispatches lightweight model (e.g. Haiku / Flash)
+sprout docs --feature update-api-docs
+
+# Explicitly override the agent selection and model
+sprout feat --issue FT-456 --agent agy --model pro
 
 # Combine a specific agent with the SCPE methodology
 sprout feat --issue FT-456 -a agy -m scpe
@@ -117,6 +153,7 @@ sprout chore --feature cleanup_logs --slug prune_old_entries
 | `<type>` | — | Positional Conventional Commit type (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). |
 | `--issue <KEY>` | — | Issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.sprout/issue.json`. |
 | `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`auto`, `claude`, `agy`, `codex`, `gemini`). Default: `auto` (Smart Router). |
+| `--model <MODEL>`| — | Explicit model override (e.g. `claude-3-7-sonnet-latest`, `pro`, `flash`, `o3-mini`). Defaults to task-type tiering. |
 | `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
 | `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key; lowercased with hyphens converted to underscores). |
 | `--slug <SLUG>` | — | Branch name slug (defaults to the issue key when `--issue` is used, otherwise `--feature`; lowercased with hyphens converted to underscores). |

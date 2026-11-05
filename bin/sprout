@@ -11,8 +11,13 @@ usage() {
   cat >&2 <<'HELP'
 Usage:
   sprout init
+  sprout session <status|recycle> [options]
   sprout agent <status|cooldown|reset> [options]
   sprout <type> (--issue <ISSUE-KEY> | --feature <name>) [options]
+
+Session Management & Handoff:
+  sprout session status                        View active agent session, pane, and context metrics
+  sprout session recycle                       Snapshot state to .sprout/handoff.md and restart fresh agent session
 
 Agent Management:
   sprout agent status                          View agent telemetry, cooldowns, and live Herdr sessions
@@ -26,7 +31,8 @@ Options:
   --slug SLUG          Branch slug; defaults to the issue key when --issue is used, otherwise --feature; lowercased with hyphens converted to underscores
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
-  -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex, gemini). Default: auto
+  -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex). Default: auto
+  --model MODEL        Explicit model override (e.g. claude-3-7-sonnet-latest, pro, flash, o3-mini)
   -m, --method NAME    Workflow/methodology template (bmad, scpe, none). Default: bmad
   --no-agent           Create worktree and Herdr workspace without launching an agent
   --no-herdr           Create worktree only without creating a Herdr workspace
@@ -38,12 +44,13 @@ and defaults under shared Git metadata, and tracker credentials in $HOME/.sprout
 
 Examples:
   sprout init
+  sprout session status
+  sprout session recycle
   sprout agent status
   sprout agent cooldown claude --for 2h --reason "5h token window reached"
   sprout agent reset claude
   sprout fix --issue FT-123
   sprout feat --issue FT-456 --agent agy --method scpe
-  sprout feat --issue FT-456 --feature ft_456 --slug loading_progress
   sprout docs --feature guide-refresh --agent codex
 HELP
   exit 2
@@ -55,6 +62,220 @@ resolve_repository() {
   common_dir=$(git -C "$requested" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   common_dir=$(cd "$common_dir" && pwd -P) || return 1
   printf '%s\n%s\n' "$(dirname "$common_dir")" "$common_dir"
+}
+
+manage_session_subcommand() {
+  local subcmd=${1:-status}
+  shift || true
+
+  local pane_override="" agent_override=""
+  while (($#)); do
+    case "$1" in
+      --pane)
+        pane_override="$2"
+        shift 2
+        ;;
+      --agent)
+        agent_override="$2"
+        shift 2
+        ;;
+      -h|--help)
+        cat >&2 <<'HELPSESS'
+Usage:
+  sprout session status [options]
+  sprout session recycle [options]
+
+Options:
+  --pane PANE_ID       Target specific Herdr pane ID
+  --agent AGENT_NAME   Target specific Herdr agent name
+  -h, --help           Show this help
+HELPSESS
+        exit 0
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  local worktree_root=""
+  worktree_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if [[ -n "$worktree_root" ]]; then
+    worktree_root=$(cd "$worktree_root" && pwd -P)
+  else
+    worktree_root=$(pwd -P)
+  fi
+
+  if ! command -v herdr >/dev/null 2>&1; then
+    printf 'Error: Herdr is required for session management.\n' >&2
+    exit 1
+  fi
+
+  python3 - "$worktree_root" "$subcmd" "$pane_override" "$agent_override" <<'PYSESSION'
+import sys, json, os, subprocess, time
+from datetime import datetime, timezone
+from pathlib import Path
+
+worktree_root = Path(sys.argv[1]).resolve()
+subcmd = sys.argv[2]
+pane_override = sys.argv[3].strip()
+agent_override = sys.argv[4].strip()
+
+# Query Herdr agents
+agent_info = None
+try:
+    out = subprocess.check_output(["herdr", "agent", "list"], stderr=subprocess.DEVNULL)
+    agents = json.loads(out).get("result", {}).get("agents", [])
+    for ag in agents:
+        if pane_override and ag.get("pane_id") == pane_override:
+            agent_info = ag
+            break
+        if agent_override and (ag.get("name") == agent_override or ag.get("agent") == agent_override):
+            agent_info = ag
+            break
+        ag_cwd = Path(ag.get("cwd", "")).resolve()
+        fg_cwd = Path(ag.get("foreground_cwd", "")).resolve()
+        if ag_cwd == worktree_root or fg_cwd == worktree_root:
+            agent_info = ag
+            break
+except Exception:
+    pass
+
+sprout_dir = worktree_root / ".sprout"
+handoff_file = sprout_dir / "handoff.md"
+
+if subcmd == "status":
+    print(f"\n🌱 Sprout Session Lifecycle Status")
+    print(f"Worktree: {worktree_root}\n")
+    if agent_info:
+        name = agent_info.get("name") or agent_info.get("agent", "unknown")
+        kind = agent_info.get("agent", "unknown")
+        pane_id = agent_info.get("pane_id", "unknown")
+        status = agent_info.get("agent_status", "unknown").upper()
+        sess_val = agent_info.get("agent_session", {}).get("value", "—")
+        print(f"Herdr Agent:       {name} (kind: {kind})")
+        print(f"Herdr Pane:        {pane_id}")
+        print(f"Lifecycle Status:  {status}")
+        print(f"Session Identifier:{sess_val}")
+    else:
+        print("Herdr Agent:       No active agent currently mapped to this worktree in Herdr.")
+
+    if handoff_file.exists():
+        mtime = datetime.fromtimestamp(handoff_file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Last Handoff:      {mtime} ({handoff_file})")
+    else:
+        print("Last Handoff:      None (session has not been recycled yet)")
+    print("")
+
+elif subcmd == "recycle":
+    if not agent_info:
+        print(f"Error: No active Herdr agent session detected for worktree {worktree_root}.\nProvide --pane <pane_id> or --agent <agent_name> if running from outside the worktree.", file=sys.stderr)
+        sys.exit(1)
+
+    pane_id = agent_info.get("pane_id")
+    agent_kind = agent_info.get("agent")
+    agent_name = agent_info.get("name") or f"agent-{worktree_root.name}"
+
+    print(f"\n🔄 Initiating Warm-Start Session Recycling for {worktree_root.name}...")
+    print(f"Target Agent: {agent_name} ({agent_kind}) in Pane: {pane_id}")
+
+    # 1. Snapshot Git state
+    git_status = subprocess.getoutput(f"git -C '{worktree_root}' status --short 2>/dev/null")
+    git_diff_stat = subprocess.getoutput(f"git -C '{worktree_root}' diff --stat 2>/dev/null")
+    recent_commits = subprocess.getoutput(f"git -C '{worktree_root}' log -n 3 --oneline 2>/dev/null")
+
+    issue_context = ""
+    issue_md = sprout_dir / "issue.md"
+    if issue_md.exists():
+        try:
+            issue_context = issue_md.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    # 2. Write .sprout/handoff.md
+    sprout_dir.mkdir(parents=True, exist_ok=True)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    handoff_content = f"""# 🔄 Sprout Session Handoff Snapshot
+
+- **Timestamp:** {now_str}
+- **Worktree:** `{worktree_root.name}`
+- **Previous Agent:** `{agent_name}` ({agent_kind})
+- **Herdr Pane:** `{pane_id}`
+
+---
+
+## 📋 Git State Summary
+
+### Changed Files:
+```text
+{git_status if git_status.strip() else "(Clean working tree)"}
+```
+
+### Diff Statistics:
+```text
+{git_diff_stat if git_diff_stat.strip() else "(No unstaged/staged diffs)"}
+```
+
+### Recent Commits:
+```text
+{recent_commits if recent_commits.strip() else "(No commits on branch)"}
+```
+
+---
+
+## 🎯 Task Context
+{issue_context if issue_context.strip() else "(No issue.md attached)"}
+
+---
+
+## 🚀 Instructions for Fresh Session
+1. Read this handoff snapshot carefully to understand progress made so far.
+2. Review modified files and current git diff.
+3. Continue the implementation without re-analyzing already completed parts.
+"""
+    with open(handoff_file, "w", encoding="utf-8") as f:
+        f.write(handoff_content)
+
+    print(f"✓ State snapshot safely persisted to {handoff_file}")
+
+    # 3. Gracefully stop previous agent process
+    print("✓ Terminating bloated agent session in Herdr...")
+    try:
+        subprocess.run(["herdr", "agent", "send-keys", agent_name, "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["herdr", "pane", "send-keys", pane_id, "C-c"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    time.sleep(1.0)
+
+    # 4. Spawn clean agent
+    print(f"✓ Starting fresh {agent_kind} session in pane {pane_id} with pristine context...")
+    extra_args = []
+    if agent_kind == "agy":
+        extra_args = ["--", "--new-project", "--project", worktree_root.name]
+
+    launch_cmd = ["herdr", "agent", "start", agent_name, "--kind", agent_kind, "--pane", pane_id] + extra_args
+    subprocess.run(launch_cmd, capture_output=True, text=True)
+
+    time.sleep(1.0)
+
+    # 5. Send warm-start prompt
+    handoff_prompt = "BMad/Sprout: Sessão reiniciada com contexto limpo. Leia o snapshot de handoff em .sprout/handoff.md e continue o trabalho a partir do ponto atual."
+    try:
+        subprocess.run(["herdr", "agent", "prompt", agent_name, handoff_prompt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("✓ Sent warm-start handoff prompt to fresh agent session.")
+    except Exception:
+        pass
+
+    print("\n✨ Session recycled successfully! Context window has been reset with full memory preserved.\n")
+
+else:
+    print(f"Unknown session subcommand: {subcmd}. Available: status, recycle", file=sys.stderr)
+    sys.exit(1)
+PYSESSION
 }
 
 manage_agent_subcommand() {
@@ -367,21 +588,30 @@ print(f"Base repository detected as {base_repo}; its path was not saved in eithe
 PYINIT
 }
 
+if [[ "${1:-}" == "session" ]]; then
+  shift
+  manage_session_subcommand "$@"
+  exit 0
+fi
+
 if [[ "${1:-}" == "agent" ]]; then
   shift
   manage_agent_subcommand "$@"
   exit 0
 fi
+
 if [[ "${1:-}" == "init" ]]; then
   [[ $# -eq 1 ]] || usage
   init_project
   exit 0
 fi
+
 if [[ "${1:-}" == "--configure-jira" ]]; then
   [[ $# -eq 1 ]] || usage
   configure_jira
   exit 0
 fi
+
 [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && usage
 [[ $# -ge 1 ]] || usage
 
@@ -398,13 +628,14 @@ slug=
 base_override=
 dest_override=
 agent_opt=
+model_opt=
 method_opt=
 no_agent=false
 no_herdr=false
 
 while (($#)); do
   case "$1" in
-    --issue|--feature|--slug|--base|--dest|-a|--agent|-m|--method)
+    --issue|--feature|--slug|--base|--dest|-a|--agent|--model|-m|--method)
       (($# >= 2)) || usage
       option=$1
       value=$2
@@ -416,6 +647,7 @@ while (($#)); do
         --base) [[ -z "$base_override" ]] || usage; base_override=$value ;;
         --dest) [[ -z "$dest_override" ]] || usage; dest_override=$value ;;
         -a|--agent) [[ -z "$agent_opt" ]] || usage; agent_opt=$value ;;
+        --model) [[ -z "$model_opt" ]] || usage; model_opt=$value ;;
         -m|--method) [[ -z "$method_opt" ]] || usage; method_opt=$value ;;
       esac
       ;;
@@ -570,6 +802,57 @@ PYROUTE
   printf '\n🌱 [Smart Router] Selected agent: %s (%s)\n' "$agent" "$router_rationale"
 fi
 
+# Execute Task-Type Model Router
+model_output=$(python3 - "$type" "$agent" "${model_opt:-}" "$project_config" <<'PYMODEL'
+import sys, tomllib
+from pathlib import Path
+
+task_type = sys.argv[1].lower()
+agent_name = sys.argv[2].lower()
+cli_model = sys.argv[3].strip()
+config_file = Path(sys.argv[4])
+
+if cli_model:
+    print(f"{cli_model}\texplicit\texplicit CLI override")
+    sys.exit(0)
+
+# Default model tiering
+frontier_types = {"feat", "fix", "refactor", "perf", "spike"}
+balanced_types = {"test", "build"}
+fast_types = {"doc", "docs", "chore", "style", "ci", "revert"}
+
+tier = "frontier" if task_type in frontier_types else ("balanced" if task_type in balanced_types else "fast")
+
+default_maps = {
+    "claude": {"frontier": "claude-3-7-sonnet-latest", "balanced": "claude-3-7-sonnet-latest", "fast": "claude-3-5-haiku-latest"},
+    "agy": {"frontier": "pro", "balanced": "flash", "fast": "flash"},
+    "codex": {"frontier": "o3-mini", "balanced": "gpt-4o", "fast": "gpt-4o-mini"}
+}
+
+model_val = None
+if config_file.exists():
+    try:
+        with open(config_file, "rb") as f:
+            cfg = tomllib.load(f).get("models", {})
+            tier_override = cfg.get("tier_map", {}).get(task_type)
+            if tier_override:
+                tier = tier_override
+            agent_models = cfg.get("agents", {}).get(agent_name, {})
+            model_val = agent_models.get(tier)
+    except Exception:
+        pass
+
+if not model_val:
+    model_val = default_maps.get(agent_name, {}).get(tier, "")
+
+print(f"{model_val}\t{tier}\ttask type '{task_type}'")
+PYMODEL
+)
+model_name=$(awk -F'\t' '{print $1}' <<< "$model_output")
+model_tier=$(awk -F'\t' '{print $2}' <<< "$model_output")
+model_rationale=$(awk -F'\t' '{print $3}' <<< "$model_output")
+printf '🌱 [Model Router] Tier: %s -> Model: %s (%s for %s)\n' "$model_tier" "$model_name" "$model_rationale" "$agent"
+
 JIRA_BASE_URL=${JIRA_BASE_URL:-}
 JIRA_EMAIL=${JIRA_EMAIL:-}
 JIRA_API_TOKEN=${JIRA_API_TOKEN:-}
@@ -700,52 +983,54 @@ import json
 import sys
 from pathlib import Path
 
-raw_file = Path(sys.argv[1])
+resp_path = Path(sys.argv[1])
 out_dir = Path(sys.argv[2])
 issue_key = sys.argv[3]
 jira_host = sys.argv[4]
 
-try:
-    with open(raw_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-except Exception:
-    data = {}
+with open(resp_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
 
 fields = data.get("fields", {})
-summary = fields.get("summary", "")
-issue_type = (fields.get("issuetype") or {}).get("name", "")
-status = (fields.get("status") or {}).get("name", "")
-priority = (fields.get("priority") or {}).get("name", "")
-assignee = (fields.get("assignee") or {}).get("displayName", "")
-desc_raw = fields.get("description")
+summary = fields.get("summary") or ""
+status = fields.get("status", {}).get("name") or "Unknown"
+issue_type = fields.get("issuetype", {}).get("name") or "Task"
+priority = fields.get("priority", {}).get("name") or "Medium"
+assignee = fields.get("assignee", {}).get("displayName") or "Unassigned"
+
+raw_desc = fields.get("description")
+desc_text = ""
 
 def extract_adf_text(node):
+    text = ""
     if isinstance(node, dict):
         if node.get("type") == "text":
-            return node.get("text", "")
-        parts = [extract_adf_text(child) for child in node.get("content", [])]
-        sep = "\n" if node.get("type") in ("paragraph", "bulletList", "orderedList", "listItem") else ""
-        return sep.join(filter(None, parts))
+            text += node.get("text", "")
+        for val in node.values():
+            text += extract_adf_text(val)
     elif isinstance(node, list):
-        return "\n".join(filter(None, [extract_adf_text(item) for item in node]))
-    return ""
+        for item in node:
+            text += extract_adf_text(item)
+    return text
 
-desc_text = extract_adf_text(desc_raw) if isinstance(desc_raw, dict) else (str(desc_raw) if desc_raw else "")
+if isinstance(raw_desc, dict) and raw_desc.get("type") == "doc":
+    desc_text = extract_adf_text(raw_desc)
+elif isinstance(raw_desc, str):
+    desc_text = raw_desc
 
-normalized = {
+issue_model = {
     "key": issue_key,
     "summary": summary,
-    "issue_type": issue_type,
     "status": status,
+    "type": issue_type,
     "priority": priority,
     "assignee": assignee,
-    "url": f"https://{jira_host}/browse/{issue_key}",
     "description": desc_text.strip(),
-    "raw_fields": fields
+    "url": f"https://{jira_host}/browse/{issue_key}"
 }
 
 with open(out_dir / "issue.json", "w", encoding="utf-8") as f:
-    json.dump(normalized, f, indent=2, ensure_ascii=False)
+    json.dump(issue_model, f, indent=2, ensure_ascii=False)
 
 with open(out_dir / "issue.md", "w", encoding="utf-8") as f:
     f.write(f"# [{issue_key}] {summary}\n\n")
@@ -769,10 +1054,21 @@ if [[ "$no_herdr" != "true" ]] && command -v herdr >/dev/null 2>&1; then
     
     if [[ "$no_agent" != "true" && -n "$pane_id" ]]; then
       safe_agent_name=$(printf 'agent-%s' "$workspace_label" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-' | cut -c1-30)
-      printf 'Starting agent %s (kind: %s) in Herdr pane %s...\n' "$safe_agent_name" "$agent" "$pane_id"
+      printf 'Starting agent %s (kind: %s, model: %s) in Herdr pane %s...\n' "$safe_agent_name" "$agent" "$model_name" "$pane_id"
       agent_extra_args=()
       if [[ "$agent" == "agy" ]]; then
         agent_extra_args=(-- --new-project --project "$workspace_label")
+        if [[ -n "$model_name" ]]; then
+          agent_extra_args+=(--model "$model_name")
+        fi
+      elif [[ "$agent" == "claude" ]]; then
+        if [[ -n "$model_name" ]]; then
+          agent_extra_args=(-- --model "$model_name")
+        fi
+      elif [[ "$agent" == "codex" ]]; then
+        if [[ -n "$model_name" ]]; then
+          agent_extra_args=(-- --model "$model_name")
+        fi
       fi
       if herdr agent start "$safe_agent_name" --kind "$agent" --pane "$pane_id" "${agent_extra_args[@]}" 2>/dev/null; then
         method_prompt=""

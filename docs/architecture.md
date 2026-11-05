@@ -111,3 +111,12 @@ Sprout follows a strict **zero-secrets-in-repo** philosophy and uses Git's inter
   - `bmad`: Invokes the BMad master orchestrator to parse the issue and draft the initial product briefing.
   - `scpe`: Prompts the agent to begin vertical slicing and specification according to SCPE.
   - `none`: Leaves the agent in an interactive state without pre-submitting a prompt.
+
+### 6. Smart Agent Router & Task-Type Model Tiering
+- **Smart Agent Router:** Evaluates provider cooldown timers (`agents_status.json`) and queries live Herdr concurrency to route to the least saturated agent.
+- **Task-Type Model Tiering:** Maps Conventional Commit types (`feat`, `fix`, `docs`, `chore`, etc.) to calibrated model tiers (`frontier`, `balanced`, `fast`) and propagates appropriate model parameters to `claude`, `agy`, or `codex`.
+
+### 7. Session Lifecycle & Context Compaction (`sprout session recycle`)
+- Solves **Context Rot** by snapshotting state to `.sprout/handoff.md` (uncommitted diffs, status, recent commits, and task description).
+- Cleanly restarts the bloated agent process inside the existing Herdr pane, restoring full attention and reducing token usage back to baseline (~3k tokens).
+

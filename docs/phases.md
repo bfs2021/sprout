@@ -62,3 +62,14 @@ This document records the developmental milestones and capabilities introduced a
   - `--agent auto` smart selection balancing Herdr load and cooldown timers.
   - Transparent developer feedback on routing decisions.
 
+---
+
+## Phase 6: Task-Type Model Routing & Warm-Start Session Recycling
+- **Goal:** Optimize token economics and eliminate context window degradation across extended agent sessions.
+- **Key Capabilities:**
+  - **Deterministic Task-Type Model Tiering:** Automatically resolves model complexity (`frontier`, `balanced`, `fast`) based on task type (`feat`, `fix`, `docs`, `chore`, etc.) and maps directly to provider models (`claude`, `agy`, `codex`).
+  - **Provider Flag Propagation:** Injects `--model` flags into Herdr agent startup invocations.
+  - **Warm-Start Session Recycling (`sprout session recycle`):** Snapshots Git diffs, modified files, and task context to `.sprout/handoff.md`, interrupts the bloated agent process in Herdr, and relaunches a fresh session with a pristine context window (~3k tokens) and warm-start prompt.
+  - **Session Lifecycle Inspection (`sprout session status`):** Displays active agent, Herdr pane, worktree mapping, and last handoff timestamp.
+
+
