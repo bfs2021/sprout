@@ -33,7 +33,7 @@ Options:
   --base PATH          Base repository; defaults to current Git repo, then BASE_REPO, then ~/workspace/finance_tool
   --dest PATH          Full worktree destination; defaults to sibling directory named after feature/key
   -a, --agent NAME     Agent to launch in Herdr workspace (auto, claude, agy, codex). Default: auto (headroom-first router)
-  --model MODEL        Explicit model override (e.g. claude-3-7-sonnet-latest, pro, flash, o3-mini)
+  --model MODEL        Explicit model override (e.g. opus, sonnet, gemini-4-argon, gemini-3.8-flash, gpt-6-luna)
   --effort LEVEL       Explicit reasoning effort override (high, medium, low)
   -m, --method NAME    Workflow/methodology template (bmad, scpe, none). Default: bmad
   --no-agent           Create worktree and Herdr workspace without launching an agent
@@ -1309,11 +1309,11 @@ if selected_agent in agents_data:
     except Exception:
         pass
 
-# Resolve provider model
+# Resolve provider model (modern 2026 fleet)
 default_models = {
-    "claude": {"frontier": "claude-3-7-sonnet-latest", "balanced": "claude-3-7-sonnet-latest", "fast": "claude-3-5-haiku-latest"},
-    "agy": {"frontier": "pro", "balanced": "flash", "fast": "flash"},
-    "codex": {"frontier": "o3-mini", "balanced": "gpt-4o", "fast": "gpt-4o-mini"}
+    "claude": {"frontier": "opus", "balanced": "sonnet", "fast": "haiku"},
+    "agy": {"frontier": "gemini-4-argon", "balanced": "gemini-4-argon", "fast": "gemini-3.8-flash"},
+    "codex": {"frontier": "gpt-6-luna", "balanced": "gpt-5.6-terra", "fast": "gpt-reserve"}
 }
 resolved_model = cli_model if cli_model else default_models.get(selected_agent, {}).get(model_tier, "")
 
@@ -1472,9 +1472,18 @@ if [[ "$no_herdr" != "true" ]] && command -v herdr >/dev/null 2>&1; then
         if [[ -n "$model_name" ]]; then
           agent_extra_args+=(--model "$model_name")
         fi
+        if [[ -n "$reasoning_effort" ]]; then
+          agent_extra_args+=(--effort "$reasoning_effort")
+        fi
       elif [[ "$agent" == "claude" ]]; then
-        if [[ -n "$model_name" ]]; then
-          agent_extra_args=(-- --model "$model_name")
+        if [[ -n "$model_name" || -n "$reasoning_effort" ]]; then
+          agent_extra_args=(--)
+          if [[ -n "$model_name" ]]; then
+            agent_extra_args+=(--model "$model_name")
+          fi
+          if [[ -n "$reasoning_effort" ]]; then
+            agent_extra_args+=(--effort "$reasoning_effort")
+          fi
         fi
       elif [[ "$agent" == "codex" ]]; then
         if [[ -n "$model_name" ]]; then

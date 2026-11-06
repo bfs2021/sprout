@@ -91,8 +91,14 @@ docs = "fast"
 chore = "fast"
 
 [models.agents.claude]
-frontier = "claude-3-7-sonnet-latest"
-fast = "claude-3-5-haiku-latest"
+frontier = "opus"
+balanced = "sonnet"
+fast = "haiku"
+
+[models.agents.agy]
+frontier = "gemini-4-argon"
+balanced = "gemini-4-argon"
+fast = "gemini-3.8-flash"
 ```
 
 ---

@@ -13,7 +13,7 @@ risk: low
 ## Description
 
 Working productively with AI coding agents introduces two critical challenges:
-1. **Inefficient Model Sizing (Resource Waste):** Naively launching heavyweight frontier models (e.g. Claude 3.7 Sonnet, Gemini Pro, OpenAI o3-mini) for every task exhausts session budgets, rate limits, and financial costs on trivial edits like documentation updates, style tweaks, or dependency bumps. Conversely, using lightweight models for complex concurrency bugs or architectural refactors yields poor code quality and hallucinations.
+1. **Inefficient Model Sizing (Resource Waste):** Naively launching heavyweight frontier models (e.g. Claude Opus 5.5, Gemini 4 Argon, OpenAI GPT-6 Luna) for every task exhausts session budgets, rate limits, and financial costs on trivial edits like documentation updates, style tweaks, or dependency bumps. Conversely, using lightweight models for complex concurrency bugs or architectural refactors yields poor code quality and hallucinations.
 2. **Context Window Saturation (Context Rot):** As coding sessions progress past 60k–100k tokens, attention dilution and lost-in-the-middle degradation cause agents to drift from original instructions, loop repetitively, and slow down dramatically.
 
 This initiative introduces a **zero-dependency, 100% local Control Plane** directly into Sprout:
@@ -45,9 +45,9 @@ This initiative introduces a **zero-dependency, 100% local Control Plane** direc
 **Given** the resolved model tier, reasoning effort, and selected agent
 **When** spawning the agent inside Herdr
 **Then** it translates into concrete provider flags:
-- `claude`: `--model claude-3-7-sonnet-latest` (frontier/balanced) or `claude-3-5-haiku-latest` (fast)
-- `agy`: `--model pro` (frontier) or `--model flash` (balanced/fast) alongside `--new-project --project <label>`
-- `codex`: `--model o3-mini` (frontier), `gpt-4o` (balanced), or `gpt-4o-mini` (fast).
+- `claude`: `--model opus` (frontier), `sonnet` (balanced), or `haiku` (fast), with `--effort <level>`
+- `agy`: `--model gemini-4-argon` (frontier/balanced) or `--model gemini-3.8-flash` (fast) with `--effort <level>` and `--new-project --project <label>`
+- `codex`: `--model gpt-6-luna` (frontier), `gpt-5.6-terra` (balanced), or `gpt-reserve` (fast).
 
 ### R4: Reliable Clean Shell Process Termination
 **Given** interactive agents (e.g. `agy`, `claude`) intercept single `C-c` signals
@@ -67,8 +67,8 @@ This initiative introduces a **zero-dependency, 100% local Control Plane** direc
 
 ## Verification Plan
 
-1. Verify running `sprout docs --feature test-docs` selects the `fast` tier (e.g. `claude-3-5-haiku-latest` or `flash`).
-2. Verify running `sprout fix --feature test-fix` selects the `frontier` tier (e.g. `claude-3-7-sonnet-latest` or `pro`).
+1. Verify running `sprout docs --feature test-docs` selects the `fast` tier (e.g. `haiku`, `gemini-3.8-flash`, or `gpt-reserve`).
+2. Verify running `sprout fix --feature test-fix` selects the `frontier` tier (e.g. `opus`, `gemini-4-argon`, or `gpt-6-luna`).
 3. Verify running `sprout <type> ... --model custom-model-v1` preserves the explicit model override.
 4. Verify running `sprout session status` inside a worktree displays the current session and pane metadata.
 5. Verify running `sprout session recycle` captures `.sprout/handoff.md` with Git diffs and successfully relaunches the agent.

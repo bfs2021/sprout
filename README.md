@@ -91,13 +91,13 @@ Sprout automatically matches the Conventional Commit task type to calibrated mod
 
 | Task Type | Model Tier | Claude Code | Antigravity (`agy`) | OpenAI Codex |
 | :--- | :--- | :--- | :--- | :--- |
-| `feat`, `fix`, `refactor`, `perf`, `spike` | **Frontier** (Deep Reasoning) | `claude-3-7-sonnet-latest` | `pro` | `o3-mini` |
-| `test`, `build` | **Balanced** (Implementation) | `claude-3-7-sonnet-latest` | `flash` | `gpt-4o` |
-| `docs`, `chore`, `style`, `ci`, `revert` | **Fast** (Cost-Effective) | `claude-3-5-haiku-latest` | `flash` | `gpt-4o-mini` |
+| `feat`, `fix`, `refactor`, `perf`, `spike` | **Frontier** (Deep Reasoning) | `opus` | `gemini-4-argon` (high effort) | `gpt-6-luna` |
+| `test`, `build` | **Balanced** (Implementation) | `sonnet` | `gemini-4-argon` (medium effort) | `gpt-5.6-terra` |
+| `docs`, `chore`, `style`, `ci`, `revert` | **Fast** (Cost-Effective) | `haiku` | `gemini-3.8-flash` (low effort) | `gpt-reserve` |
 
 You can override the model explicitly at any time with `--model <name>`:
 ```bash
-sprout feat --issue FT-123 --model claude-3-5-sonnet-20241022
+sprout feat --issue FT-123 --model opus --effort high
 ```
 
 ### Context Compaction & Autonomous Sentinel Watcher
@@ -163,7 +163,7 @@ sprout chore --feature cleanup_logs --slug prune_old_entries
 | `<type>` | — | Positional Conventional Commit type (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`). |
 | `--issue <KEY>` | — | Issue key (e.g. `FT-123`). Fetches details, derives branch slug, and creates `.sprout/issue.json`. |
 | `--agent <NAME>` | `-a` | Agent runtime to start in Herdr (`auto`, `claude`, `agy`, `codex`, `gemini`). Default: `auto` (Smart Router). |
-| `--model <MODEL>`| — | Explicit model override (e.g. `claude-3-7-sonnet-latest`, `pro`, `flash`, `o3-mini`). Defaults to task-type tiering. |
+| `--model <MODEL>`| — | Explicit model override (e.g. `opus`, `sonnet`, `gemini-4-argon`, `gemini-3.8-flash`, `gpt-6-luna`). Defaults to task-type tiering. |
 | `--method <NAME>`| `-m` | Initial methodology prompt template (`bmad`, `scpe`, `none`). |
 | `--feature <NAME>`| — | Directory name for the worktree (defaults to issue key; lowercased with hyphens converted to underscores). |
 | `--slug <SLUG>` | — | Branch name slug (defaults to the issue key when `--issue` is used, otherwise `--feature`; lowercased with hyphens converted to underscores). |
